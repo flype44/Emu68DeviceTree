@@ -1,0 +1,55 @@
+Short:        Display the PiStorm/Emu68 Device Tree
+Author:       flype44 (at) gmail
+Uploader:     flype44 (at) gmail
+Type:         util/moni
+Version:      1.0.0-rc1
+Architecture: m68k-amigaos >= 3.0.0
+Distribution: Aminet
+Requires:     MUI 3.8, MCC_NList, MCC_NListtree, MCC_HexEdit
+
+
+                      Emu68DeviceTree 1.0.0-rc1
+                      =========================
+
+                  Display the PiStorm/Emu68 Device Tree
+                    Written by Philippe CARPENTIER
+
+
+WHAT IT IS
+==========
+
+Emu68DeviceTree is a MUI browser for the Device Tree published by Emu68
+on PiStorm boards. That tool may help the lowlevel PiStorm/Emu68 developers.
+
+
+REQUIREMENTS
+============
+
+  - AmigaOS 3.0 or better. Nothing newer than V36 is called.
+
+  - A machine exposing the devicetree.resource.
+    In practice a PiStorm board running Emu68.
+
+  - MUI 3.8 or better.
+    http://aminet.net/package/util/libs/mui38usr
+
+  - MCC_NList, MCC_NListview, MCC_NListtree.
+    http://aminet.net/package/dev/mui/MCC_NList-0.128
+    
+  - MCC_HexEdit, by Miloslaw Smyk.
+    http://aminet.net/package/dev/mui/MCC_HexEdit
+
+
+INSTALLATION
+============
+
+Copy Emu68DeviceTree wherever you like. The program needs no assign, no
+configuration file and no argument. Its settings are the MUI ones, reachable
+from the Project menu.
+
+
+NOTES
+=====
+
+The project repository is hosted here :
+https://github.com/flype44/Emu68DeviceTree/

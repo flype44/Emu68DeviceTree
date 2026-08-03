@@ -1,0 +1,18 @@
+#################################################
+#
+# SAS/C Makefile for "Emu68DeviceTree".
+# AmigaOS M68K SAS/C 6.59 Compiler.
+# 
+#################################################
+
+OUTFILE=Emu68DeviceTree
+
+OBJECTS=Emu68DeviceTree.o DeviceTree.o Clipboard.o Utils.o
+
+all: $(OUTFILE)
+
+clean:
+	@delete $(OBJECTS)
+
+$(OUTFILE): $(OBJECTS)
+	sc MATH=standard LIB:amiga.lib TO $(OUTFILE) LINK $(OBJECTS)
