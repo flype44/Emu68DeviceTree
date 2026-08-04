@@ -1,0 +1,57 @@
+name: Create RC1 Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name for the release'
+        required: false
+        default: 'v1.0.0-rc1'
+      prerelease:
+        description: 'Mark the release as a prerelease (true/false)'
+        required: false
+        default: 'true'
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      issues: write
+      checks: write
+      actions: write
+      pull-requests: write
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create RC1 release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.event.inputs.tag }}
+          name: ${{ github.event.inputs.tag }}
+          body: |
+            RC1 — Release Candidate 1
+
+            Summary
+            - First release candidate for Emu68DeviceTree.
+            - Includes an AmigaOS executable compiled with SASC (see bin/) and its .info icon.
+
+            Important
+            - This build requires a working MUI setup. Make sure MUI is installed on your AmigaOS system and that you have the MUI MCC extensions referenced in the repository README before running the executable.
+
+            Installation
+            1. Download the assets attached to this release or copy the files from the repo bin/ folder.
+            2. Place the executable and the .info file in the desired Work: or SYS: location on your Amiga system/image.
+            3. Ensure MUI and the required MCCs are installed (see README for exact MCCs and installation instructions).
+
+            Notes for testers
+            - The executable was compiled with SASC.
+            - Report issues to the repo issues page with the tag RC1 and include steps to reproduce and system details (MUI version, OS version).
+
+            Changelog
+            - Initial release candidate; packaging of compiled binary and icon.
+          prerelease: ${{ github.event.inputs.prerelease }}
+          artifacts: bin/*
