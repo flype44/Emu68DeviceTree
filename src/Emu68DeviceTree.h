@@ -124,8 +124,9 @@ typedef enum
     EVENT_LAST,
     EVENT_ACTIVE,
     EVENT_NODEINFO,
-    EVENT_TITLECLICK
-    
+    EVENT_TITLECLICK,
+    EVENT_DUMPALL
+
 } ProcessEvent_t;
 
 /******************************************************************************
@@ -149,6 +150,7 @@ typedef struct ObjApp
     APTR MI_Quit;
     APTR MI_Expand;
     APTR MI_Collapse;
+    APTR MI_DumpAll;
 
     /* Main Window */
 

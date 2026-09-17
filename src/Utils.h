@@ -26,15 +26,12 @@ struct FmtStream
 
 /* PROTOTYPES */
 
-VOID  ASM PutChar(REG(d0) UBYTE character, REG(a3) struct FmtStream * stream);
 VOID  SPrintf(STRPTR buffer, LONG size, CONST_STRPTR format, ...);
 LONG  StringCompare(CONST_STRPTR string1, CONST_STRPTR string2);
-LONG  StringCompare2(CONST_STRPTR string1, CONST_STRPTR string2);
 VOID  StringCopy(STRPTR buffer, CONST_STRPTR string, LONG size);
 ULONG StringCount(CONST_STRPTR bytes, ULONG length);
 LONG  StringLength(CONST_STRPTR string);
 BOOL  IsAsciiValue(CONST_STRPTR bytes, ULONG length);
-ULONG BitsAt(ULONG high, ULONG low, UWORD offset, UWORD count);
 VOID  FormatBits(ULONG high, ULONG low, UWORD width, UWORD bits, BOOL trim, STRPTR buffer, LONG size);
 VOID  FormatEpoch(ULONG epoch, STRPTR buffer, ULONG size);
 

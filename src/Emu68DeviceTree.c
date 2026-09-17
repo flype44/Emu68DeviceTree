@@ -102,6 +102,9 @@ STATIC VOID  DoCursor(ObjApp_t * object, ULONG where);
 STATIC VOID  DoNodeInfo(ObjApp_t * object);
 STATIC VOID  DoReload(ObjApp_t * object);
 STATIC VOID  DoSave(ObjApp_t * object);
+STATIC VOID  DoDumpAll(ObjApp_t * object);
+STATIC VOID  DumpProperties(struct Writer * writer, const of_property_t * prop, ULONG depth);
+STATIC VOID  DumpNode(struct Writer * writer, const of_node_t * node, ULONG depth);
 
 /******************************************************************************
  * 
@@ -135,9 +138,6 @@ extern struct ExecBase * SysBase;
 extern struct DosLibrary * DOSBase;
 extern struct IntuitionBase * IntuitionBase;
 extern struct Library * UtilityBase;
-
-/* DeviceTree.h */
-extern CONST_STRPTR typeNames[ENTRY_TYPE_COUNT];
 
 /******************************************************************************
  * 
@@ -1706,6 +1706,148 @@ STATIC VOID DoSave(ObjApp_t * object)
 
 /******************************************************************************
  *
+ * DumpProperties()
+ *
+ * One node's properties, one line each: name, type and the same value a
+ * glance at the tree already shows.
+ *
+ ******************************************************************************/
+
+#define DUMP_INDENT "    "
+
+STATIC VOID DumpProperties(struct Writer * writer, const of_property_t * prop, ULONG depth)
+{
+    UBYTE type[32];
+    UBYTE value[64];
+
+    for (; prop != NULL; prop = prop->op_next)
+    {
+        ULONG i;
+
+        for (i = 0; i < depth; i++)
+        {
+            WriterWrite(writer, (CONST_STRPTR)DUMP_INDENT,
+                (LONG)StringLength((CONST_STRPTR)DUMP_INDENT));
+        }
+
+        FormatType(prop, type, sizeof(type));
+        FormatValue(prop, value, sizeof(value));
+
+        WriterWrite(writer, (CONST_STRPTR)prop->op_name,
+            StringLength((CONST_STRPTR)prop->op_name));
+        WriterWrite(writer, (CONST_STRPTR)": ", 2);
+        WriterWrite(writer, (CONST_STRPTR)type, StringLength((CONST_STRPTR)type));
+        WriterWrite(writer, (CONST_STRPTR)" = ", 3);
+        WriterWrite(writer, (CONST_STRPTR)value, StringLength((CONST_STRPTR)value));
+        WriterWrite(writer, (CONST_STRPTR)"\n", 1);
+    }
+}
+
+/******************************************************************************
+ *
+ * DumpNode()
+ *
+ * One node, its properties, then its children: the whole tree from 'node'
+ * down, in the order devicetree.resource holds it (unsorted).
+ *
+ ******************************************************************************/
+
+STATIC VOID DumpNode(struct Writer * writer, const of_node_t * node, ULONG depth)
+{
+    for (; node != NULL; node = node->on_next)
+    {
+        CONST_STRPTR name = (CONST_STRPTR)node->on_name;
+        ULONG i;
+
+        if ((name == NULL) || (name[0] == '\0'))
+        {
+            name = (CONST_STRPTR)"/";
+        }
+
+        for (i = 0; i < depth; i++)
+        {
+            WriterWrite(writer, (CONST_STRPTR)DUMP_INDENT,
+                (LONG)StringLength((CONST_STRPTR)DUMP_INDENT));
+        }
+
+        WriterWrite(writer, name, StringLength(name));
+        WriterWrite(writer, (CONST_STRPTR)"/\n", 2);
+
+        DumpProperties(writer, node->on_properties, depth + 1);
+        DumpNode(writer, node->on_children, depth + 1);
+    }
+}
+
+/******************************************************************************
+ *
+ * DoDumpAll()
+ *
+ * Save the whole device tree to a plain text file, one indented line per
+ * node or property, in the same wording FormatType()/FormatValue() give the
+ * tree view. The ASL requester remembers the drawer and file name it was
+ * last confirmed with, defaulting to RAM:DeviceTree.txt on first use.
+ *
+ ******************************************************************************/
+
+STATIC UBYTE dumpDrawer[MAX_PATHNAME] = "RAM:";
+STATIC UBYTE dumpFile[108]            = "DeviceTree.txt";
+
+STATIC VOID DoDumpAll(ObjApp_t * object)
+{
+    struct FileRequester * request;
+    struct Writer writer;
+    UBYTE path[MAX_PATHNAME];
+    BOOL ok = TRUE;
+
+    if ((DTBase == NULL) || (DTBase->dt_Root == NULL))
+    {
+        return;
+    }
+
+    request = (struct FileRequester *)MUI_AllocAslRequestTags(ASL_FileRequest,
+        ASLFR_TitleText,     (IPTR)"Dump the whole tree to...",
+        ASLFR_DoSaveMode,    TRUE,
+        ASLFR_InitialDrawer, (IPTR)dumpDrawer,
+        ASLFR_InitialFile,   (IPTR)dumpFile,
+        TAG_DONE);
+
+    if (request == NULL)
+    {
+        return;
+    }
+
+    if (MUI_AslRequestTags(request, TAG_DONE))
+    {
+        ok = FALSE;
+
+        StringCopy(dumpDrawer, (CONST_STRPTR)request->fr_Drawer, (LONG)sizeof(dumpDrawer));
+        StringCopy(dumpFile,   (CONST_STRPTR)request->fr_File,   (LONG)sizeof(dumpFile));
+
+        StringCopy(path, (CONST_STRPTR)request->fr_Drawer, (LONG)sizeof(path));
+
+        if (AddPart(path, (CONST_STRPTR)request->fr_File, sizeof(path)))
+        {
+            if (WriterOpenFile(&writer, (CONST_STRPTR)path))
+            {
+                DumpNode(&writer, DTBase->dt_Root, 0);
+
+                ok = WriterClose(&writer);
+            }
+        }
+    }
+
+    MUI_FreeAslRequest(request);
+
+    if (!ok)
+    {
+        MUI_Request(object->App, object->WI_Main, 0,
+            (STRPTR)APP_NAME, (STRPTR)"*_Ok",
+            (STRPTR)"The device tree could not be dumped to that file.");
+    }
+}
+
+/******************************************************************************
+ *
  * DoInspect()
  *
  ******************************************************************************/
@@ -1817,6 +1959,10 @@ VOID ProcessEvents(VOID)
             DoSave(appMain);
             break;
 
+        case EVENT_DUMPALL:
+            DoDumpAll(appMain);
+            break;
+
         case EVENT_FIRST:
         case EVENT_PREV:
         case EVENT_NEXT:
@@ -1911,6 +2057,8 @@ ObjApp_t * CreateApp(VOID)
         MUIA_Family_Child, MenuObjectT("Tree"),
             MUIA_Family_Child, object->MI_Expand      = MakeMenuItem("Expand All", "E"),
             MUIA_Family_Child, object->MI_Collapse    = MakeMenuItem("Collapse All", "C"),
+            MUIA_Family_Child, MakeMenuBar(),
+            MUIA_Family_Child, object->MI_DumpAll     = MakeMenuItem("Dump All", "D"),
         End,
     End;
 
@@ -2123,8 +2271,11 @@ ObjApp_t * CreateApp(VOID)
     DoMethod(object->MI_Iconify, MUIM_Notify, MUIA_Menuitem_Trigger, MUIV_EveryTime, 
         object->App, 3, MUIM_Set, MUIA_Application_Iconified, TRUE);
 
-    DoMethod(object->MI_Reload, MUIM_Notify, MUIA_Menuitem_Trigger, MUIV_EveryTime, 
+    DoMethod(object->MI_Reload, MUIM_Notify, MUIA_Menuitem_Trigger, MUIV_EveryTime,
         object->App, 2, MUIM_Application_ReturnID, EVENT_RELOAD);
+
+    DoMethod(object->MI_DumpAll, MUIM_Notify, MUIA_Menuitem_Trigger, MUIV_EveryTime,
+        object->App, 2, MUIM_Application_ReturnID, EVENT_DUMPALL);
 
     DoMethod(object->MI_About, MUIM_Notify, MUIA_Menuitem_Trigger, MUIV_EveryTime, 
         object->App, 2, MUIM_Application_ReturnID, EVENT_ABOUT);

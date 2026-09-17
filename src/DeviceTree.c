@@ -31,7 +31,7 @@ CONST_STRPTR typeNames[ENTRY_TYPE_COUNT] =
  *
  ******************************************************************************/
 
-ULONG CountProperties(of_property_t * prop)
+ULONG CountProperties(const of_property_t * prop)
 {
     ULONG count = 0;
 
@@ -50,7 +50,7 @@ ULONG CountProperties(of_property_t * prop)
  *
  ******************************************************************************/
 
-ULONG CountNodes(of_node_t * node)
+ULONG CountNodes(const of_node_t * node)
 {
     ULONG count = 0;
 
@@ -69,7 +69,7 @@ ULONG CountNodes(of_node_t * node)
  *
  ******************************************************************************/
 
-ULONG CountSubItems(of_node_t * node)
+ULONG CountSubItems(const of_node_t * node)
 {
     if (node == NULL)
     {
@@ -86,7 +86,7 @@ ULONG CountSubItems(of_node_t * node)
  * 
  ******************************************************************************/
 
-ULONG EntryType(of_property_t * prop)
+ULONG EntryType(const of_property_t * prop)
 {
     CONST_STRPTR bytes;
 
@@ -126,7 +126,7 @@ ULONG EntryType(of_property_t * prop)
  * 
  ******************************************************************************/
 
-VOID FormatType(of_property_t * prop, STRPTR buffer, LONG size)
+VOID FormatType(const of_property_t * prop, STRPTR buffer, LONG size)
 {
     ULONG type = EntryType(prop);
     CONST_STRPTR name = typeNames[type];
@@ -148,7 +148,7 @@ VOID FormatType(of_property_t * prop, STRPTR buffer, LONG size)
  * 
  ******************************************************************************/
 
-VOID FormatValue(of_property_t * prop, STRPTR buffer, LONG size)
+VOID FormatValue(const of_property_t * prop, STRPTR buffer, LONG size)
 {
     CONST_STRPTR bytes;
     ULONG length;
@@ -200,8 +200,7 @@ VOID FormatValue(of_property_t * prop, STRPTR buffer, LONG size)
 
         if (high == 0)
         {
-            SPrintf(buffer, size, (CONST_STRPTR)"0x%08lx%08lx (%lu)",
-                high, low, low);
+            SPrintf(buffer, size, (CONST_STRPTR)"0x%08lx (%lu)", low, low);
         }
         else
         {

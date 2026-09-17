@@ -18,12 +18,20 @@ extern struct ExecBase * SysBase;
 extern struct Library * UtilityBase;
 
 /******************************************************************************
- * 
- * PutChar()
- * 
+ *
+ * PROTOTYPES
+ *
  ******************************************************************************/
 
-ASM VOID PutChar(REG(d0) UBYTE character, REG(a3) struct FmtStream * stream)
+STATIC LONG StringCompare2(CONST_STRPTR string1, CONST_STRPTR string2);
+
+/******************************************************************************
+ *
+ * PutChar()
+ *
+ ******************************************************************************/
+
+STATIC ASM VOID PutChar(REG(d0) UBYTE character, REG(a3) struct FmtStream * stream)
 {
     if (stream->left > 0)
     {
@@ -142,7 +150,7 @@ LONG StringCompare(CONST_STRPTR string1, CONST_STRPTR string2)
  * 
  ******************************************************************************/
 
-LONG StringCompare2(CONST_STRPTR string1, CONST_STRPTR string2)
+STATIC LONG StringCompare2(CONST_STRPTR string1, CONST_STRPTR string2)
 {
     while (*string1 && (*string1 == *string2))
     {
@@ -189,9 +197,16 @@ ULONG StringCount(CONST_STRPTR bytes, ULONG length)
 }
 
 /******************************************************************************
- * 
+ *
  * IsAsciiValue()
- * 
+ *
+ * Device-tree string properties are NUL-terminated, and a "string list"
+ * packs several of them back to back, each ending in its own NUL. This
+ * classifies 'bytes' as text under that convention: a final NUL is
+ * mandatory, and at least one run of two or more printable characters is
+ * required, so a length below 2, an all-NUL padding run, or a lone
+ * printable byte between separators does not count as text.
+ *
  ******************************************************************************/
 
 BOOL IsAsciiValue(CONST_STRPTR bytes, ULONG length)
@@ -244,9 +259,15 @@ BOOL IsAsciiValue(CONST_STRPTR bytes, ULONG length)
  * 
  ******************************************************************************/
 
-ULONG BitsAt(ULONG high, ULONG low, UWORD offset, UWORD count)
+STATIC ULONG BitsAt(ULONG high, ULONG low, UWORD offset, UWORD count)
 {
     ULONG value;
+    ULONG mask;
+
+    if (count == 0)
+    {
+        return (0);
+    }
 
     if (offset >= 32)
     {
@@ -262,7 +283,16 @@ ULONG BitsAt(ULONG high, ULONG low, UWORD offset, UWORD count)
         }
     }
 
-    return (value & ((1UL << count) - 1));
+    if (count >= (8 * sizeof(ULONG)))
+    {
+        mask = ~0UL;
+    }
+    else
+    {
+        mask = (1UL << count) - 1;
+    }
+
+    return (value & mask);
 }
 
 

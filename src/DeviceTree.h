@@ -39,13 +39,17 @@ struct DeviceTreeBase {
     CONST_STRPTR         dt_Strings;
 };
 
+/* GLOBALS */
+
+extern CONST_STRPTR typeNames[ENTRY_TYPE_COUNT];
+
 /* PROTOTYPES */
 
-ULONG CountNodes(of_node_t * node);
-ULONG CountSubItems(of_node_t * node);
-ULONG CountProperties(of_property_t * prop);
-ULONG EntryType(of_property_t * prop);
-VOID  FormatType(of_property_t * prop, STRPTR buffer, LONG size);
-VOID  FormatValue(of_property_t * prop, STRPTR buffer, LONG size);
+ULONG CountNodes(const of_node_t * node);
+ULONG CountSubItems(const of_node_t * node);
+ULONG CountProperties(const of_property_t * prop);
+ULONG EntryType(const of_property_t * prop);
+VOID  FormatType(const of_property_t * prop, STRPTR buffer, LONG size);
+VOID  FormatValue(const of_property_t * prop, STRPTR buffer, LONG size);
 
 #endif // DEVICETREE_H
