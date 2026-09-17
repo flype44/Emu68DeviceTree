@@ -162,9 +162,44 @@ STATIC LONG StringCompare2(CONST_STRPTR string1, CONST_STRPTR string2)
 }
 
 /******************************************************************************
- * 
+ *
+ * StringContains()
+ *
+ * Whether 'needle' occurs anywhere in 'haystack', case insensitive. An
+ * empty needle matches everything; a NULL haystack matches nothing else.
+ *
+ ******************************************************************************/
+
+BOOL StringContains(CONST_STRPTR haystack, CONST_STRPTR needle)
+{
+    LONG needleLen;
+    LONG hayLen;
+    LONG i;
+
+    needleLen = StringLength(needle);
+
+    if (needleLen == 0)
+    {
+        return (TRUE);
+    }
+
+    hayLen = StringLength(haystack);
+
+    for (i = 0; (i + needleLen) <= hayLen; i++)
+    {
+        if ((LONG)Strnicmp(&haystack[i], needle, needleLen) == 0)
+        {
+            return (TRUE);
+        }
+    }
+
+    return (FALSE);
+}
+
+/******************************************************************************
+ *
  * StringCount()
- * 
+ *
  ******************************************************************************/
 
 ULONG StringCount(CONST_STRPTR bytes, ULONG length)

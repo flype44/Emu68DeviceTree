@@ -14,6 +14,8 @@ lowlevel PiStorm/Emu68 developer who needs to see, decode and extract what
 
 ![Emu68DeviceTree](Emu68DeviceTree.png)
 
+![Emu68DeviceTree in action](Emu68DeviceTree.gif)
+
 ## Features
 
 - **Tree browser** — the whole device tree as a MUI NListtree, with a *Name*,

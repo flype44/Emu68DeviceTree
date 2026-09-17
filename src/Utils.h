@@ -28,6 +28,7 @@ struct FmtStream
 
 VOID  SPrintf(STRPTR buffer, LONG size, CONST_STRPTR format, ...);
 LONG  StringCompare(CONST_STRPTR string1, CONST_STRPTR string2);
+BOOL  StringContains(CONST_STRPTR haystack, CONST_STRPTR needle);
 VOID  StringCopy(STRPTR buffer, CONST_STRPTR string, LONG size);
 ULONG StringCount(CONST_STRPTR bytes, ULONG length);
 LONG  StringLength(CONST_STRPTR string);

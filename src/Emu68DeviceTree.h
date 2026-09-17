@@ -20,6 +20,14 @@
   #define MAKE_ID(a,b,c,d) ((ULONG) (a)<<24 | (ULONG) (b)<<16 | (ULONG) (c)<<8 | (ULONG) (d))
 #endif
 
+/* NList's own image-embedding preparse code ("ESC o[n]"), alongside
+   MUIX_B/MUIX_N/etc.: mui.h has no macro for it since it is not a core MUI
+   text style, but a NList.mcc extension */
+
+#ifndef MUIX_O
+  #define MUIX_O "\033o"
+#endif
+
 /******************************************************************************
  *
  * APPLICATION
@@ -28,8 +36,8 @@
 
 #define APP_NAME        "Emu68DeviceTree"
 #define APP_BASE        "Emu68DeviceTree"
-#define APP_DATE        "3.8.2026"
-#define APP_VERSION     "1.0.0-rc1"
+#define APP_DATE        "18.9.2026"
+#define APP_VERSION     "1.0.1"
 #define APP_VERSTRING   APP_NAME " " APP_VERSION " (" APP_DATE ")"
 #define APP_AUTHORS     "Philippe CARPENTIER"
 #define APP_COPYRIGHT   "Written by " APP_AUTHORS
@@ -88,18 +96,9 @@
         MUIA_Font, MUIV_Font_Button,\
         MUIA_Text_Contents, label,\
         MUIA_ShortHelp, help, \
-        MUIA_Text_PreParse, "\33c",\
+        MUIA_Text_PreParse, MUIX_C,\
         MUIA_InputMode, MUIV_InputMode_RelVerify,\
         MUIA_Background, MUII_ButtonBack,\
-    End)
-
-#define MakeMenuBar() \
-    (MUI_MakeObject(MUIO_Menuitem, NM_BARLABEL, 0, 0, 0))
-
-#define MakeMenuItem(a, b) \
-    (MenuitemObject, \
-        MUIA_Menuitem_Title,    a, \
-        MUIA_Menuitem_Shortcut, b, \
     End)
 
 /******************************************************************************
@@ -125,7 +124,14 @@ typedef enum
     EVENT_ACTIVE,
     EVENT_NODEINFO,
     EVENT_TITLECLICK,
-    EVENT_SAVENODE
+    EVENT_SAVENODE,
+    EVENT_SEARCH,
+    EVENT_TOGGLESEARCH,
+    EVENT_FULLNAMES,
+    EVENT_EXPAND,
+    EVENT_COLLAPSE,
+    EVENT_MUISETTINGS,
+    EVENT_ICONIFY
 
 } ProcessEvent_t;
 
@@ -142,22 +148,17 @@ typedef struct ObjApp
     /* Menus */
 
     APTR MN_Main;
-    APTR MI_Reload;
-    APTR MI_About;
-    APTR MI_AboutMUI;
-    APTR MI_MuiSettings;
-    APTR MI_Iconify;
-    APTR MI_Quit;
-    APTR MI_Expand;
-    APTR MI_Collapse;
     APTR MI_FullNames;
-    APTR MI_SaveNode;
+    APTR MI_ShowSearch;
 
     /* Main Window */
 
     APTR WI_Main;
     APTR LV_Tree;
     APTR TR_Tree;
+    APTR GR_Main;
+    APTR GR_Search;
+    APTR ST_Search;
 
     /* Property Window */
 

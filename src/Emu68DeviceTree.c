@@ -66,6 +66,9 @@ STATIC LONG  CompareProperties(of_property_t * prop1, of_property_t * prop2);
 STATIC LONG  CompareNodes(of_node_t * node1, of_node_t * node2);
 STATIC VOID  SortProperties(of_property_t ** array, ULONG count);
 STATIC VOID  SortNodes(of_node_t ** array, ULONG count);
+STATIC BOOL  PropertyMatchesFilter(const of_property_t * prop);
+STATIC BOOL  SubtreeMatchesFilter(const of_node_t * node);
+STATIC BOOL  NodeMatchesFilter(const of_node_t * node);
 STATIC VOID  InsertProperty(APTR tree, of_property_t * prop, struct MUI_NListtree_TreeNode * parent);
 STATIC VOID  InsertProperties(APTR tree, of_property_t * prop, struct MUI_NListtree_TreeNode * parent);
 STATIC VOID  InsertNode(APTR tree, of_node_t * node, struct MUI_NListtree_TreeNode * parent);
@@ -101,6 +104,8 @@ STATIC VOID  DoCopy(ObjApp_t * object, CONST_STRPTR text);
 STATIC VOID  DoCursor(ObjApp_t * object, ULONG where);
 STATIC VOID  DoNodeInfo(ObjApp_t * object);
 STATIC VOID  DoReload(ObjApp_t * object);
+STATIC VOID  DoSearch(ObjApp_t * object);
+STATIC VOID  DoToggleSearch(ObjApp_t * object);
 STATIC VOID  DoSave(ObjApp_t * object);
 STATIC VOID  DoSaveNode(ObjApp_t * object);
 STATIC VOID  DumpValue(struct Writer * writer, const of_property_t * prop);
@@ -247,6 +252,13 @@ STATIC BOOL  sortReverse = FALSE;
 
 STATIC BOOL  dumpFullNames = TRUE;
 
+/* The tree filter, applied both while the tree is being built and while
+   DoSaveNode() dumps it: empty shows/exports everything, otherwise only
+   entries matching this (case insensitive, substring) and their
+   ancestors, so a match stays reachable in context */
+
+STATIC UBYTE searchFilter[128] = "";
+
 /* Column names, indexed by SORT_BY_#? */
 
 STATIC CONST_STRPTR columnNames[SORT_COLUMN_COUNT] =
@@ -266,8 +278,8 @@ STATIC VOID DoAbout(VOID)
 {
     MUI_Request(appMain->App, appMain->WI_Main, 0,
         (STRPTR)"About " APP_NAME, (STRPTR)"*_Ok",
-        (STRPTR)"\n\033c\033b" APP_VERSTRING "\033n\n\n"
-        "\0338" APP_DESCRIPTION "\0332\n\n" APP_COPYRIGHT "\n\n"
+        (STRPTR)"\n" MUIX_C MUIX_B APP_VERSTRING MUIX_N "\n\n"
+        MUIX_PH APP_DESCRIPTION MUIX_PT "\n\n" APP_COPYRIGHT "\n\n"
         "This a MUI application\nMUI is copyrighted by Stefan Stuntz\n");
 }
 
@@ -285,18 +297,90 @@ STATIC VOID DoAboutMUI(VOID)
 /******************************************************************************
  *
  * DoReload()
- * 
+ *
+ * Resets any active search before rebuilding, as if the user had cleared
+ * the search gadget and pressed RETURN: a reload always shows the whole
+ * tree again.
+ *
  ******************************************************************************/
 
 STATIC VOID DoReload(ObjApp_t * object)
 {
+    searchFilter[0] = '\0';
+
+    set(object->ST_Search, MUIA_String_Contents, (IPTR)"");
+
     SetMainTitle(object, BuildTree(object, DTBase));
 }
 
 /******************************************************************************
- * 
+ *
+ * DoSearch()
+ *
+ * Filter the tree to what searchFilter now holds (the search gadget's
+ * contents when RETURN was pressed): matching nodes and properties, their
+ * parents, and nothing else. An empty search shows everything again.
+ *
+ ******************************************************************************/
+
+STATIC VOID DoSearch(ObjApp_t * object)
+{
+    CONST_STRPTR text = NULL;
+
+    get(object->ST_Search, MUIA_String_Contents, &text);
+
+    StringCopy(searchFilter, text, (LONG)sizeof(searchFilter));
+
+    SetMainTitle(object, BuildTree(object, DTBase));
+}
+
+/******************************************************************************
+ *
+ * DoToggleSearch()
+ *
+ * Show or hide the search gadget after MI_ShowSearch's checkmark, and hand
+ * the keyboard to whichever of it or the tree makes sense now: the search
+ * gadget when it just appeared, the tree when it just went away (typing
+ * into a gadget nobody can see would be worse than pointless).
+ *
+ * GR_Search (the group wrapping the string gadget) is actually removed from
+ * and re-added to GR_Main, rather than just having MUIA_ShowMe toggled on
+ * it: a plain ShowMe left the cycle-chain focus border of whichever gadget
+ * had the keyboard behind as a stray artifact (a known rough edge, not
+ * specific to this app). OM_REMMEMBER/OM_ADDMEMBER inside InitChange/
+ * ExitChange is the same technique ShowHexDump() already uses in this file
+ * for the hex dump view, and it never has this problem: MUI fully forgets
+ * and redraws that part of the layout instead of merely hiding it in place.
+ *
+ ******************************************************************************/
+
+STATIC VOID DoToggleSearch(ObjApp_t * object)
+{
+    ULONG checked = FALSE;
+
+    get(object->MI_ShowSearch, MUIA_Menuitem_Checked, &checked);
+
+    DoMethod(object->GR_Main, MUIM_Group_InitChange);
+
+    if (checked)
+    {
+        DoMethod(object->GR_Main, OM_ADDMEMBER, (IPTR)object->GR_Search);
+    }
+    else
+    {
+        DoMethod(object->GR_Main, OM_REMMEMBER, (IPTR)object->GR_Search);
+    }
+
+    DoMethod(object->GR_Main, MUIM_Group_ExitChange);
+
+    set(object->WI_Main, MUIA_Window_ActiveObject,
+        (IPTR)(checked ? object->ST_Search : object->TR_Tree));
+}
+
+/******************************************************************************
+ *
  * DisplayFunc()
- * 
+ *
  ******************************************************************************/
 
 STATIC SAVEDS ASM ULONG DisplayFunc(
@@ -327,14 +411,14 @@ STATIC SAVEDS ASM ULONG DisplayFunc(
             of_node_t * node = (of_node_t *)msg->TreeNode->tn_User;
             typeText = (STRPTR)typeNames[ENTRY_TYPE_NODE];
             SPrintf(lengthBuffer, sizeof(lengthBuffer),
-                (CONST_STRPTR)"\033r%lu", CountSubItems(node));
+                (CONST_STRPTR)MUIX_R "%lu", CountSubItems(node));
         }
         else
         {
             of_property_t * prop = (of_property_t *)msg->TreeNode->tn_User;
             type = EntryType(prop);
             FormatType(prop, typeBuffer, sizeof(typeBuffer));
-            SPrintf(lengthBuffer, sizeof(lengthBuffer), (CONST_STRPTR)"\033r%lu",
+            SPrintf(lengthBuffer, sizeof(lengthBuffer), (CONST_STRPTR)MUIX_R "%lu",
                 (prop != NULL) ? prop->op_length : 0);
         }
 
@@ -345,7 +429,7 @@ STATIC SAVEDS ASM ULONG DisplayFunc(
         else
         {
             SPrintf(nameBuffer, sizeof(nameBuffer),
-                (CONST_STRPTR)"\033o[%lu] %s", type, (IPTR)name);
+                (CONST_STRPTR)MUIX_O "[%lu] %s", type, (IPTR)name);
             *msg->Array++ = nameBuffer;
         }
 
@@ -357,9 +441,9 @@ STATIC SAVEDS ASM ULONG DisplayFunc(
         *msg->Array++ = (STRPTR)columnNames[SORT_BY_NAME];
         *msg->Array++ = (STRPTR)columnNames[SORT_BY_TYPE];
         *msg->Array++ = (STRPTR)columnNames[SORT_BY_LENGTH];
-        *msg->Preparse++ = (STRPTR)"\033b";
-        *msg->Preparse++ = (STRPTR)"\033b";
-        *msg->Preparse++ = (STRPTR)"\033b\033r";
+        *msg->Preparse++ = (STRPTR)MUIX_B;
+        *msg->Preparse++ = (STRPTR)MUIX_B;
+        *msg->Preparse++ = (STRPTR)MUIX_B MUIX_R;
     }
 
     return (0);
@@ -506,8 +590,84 @@ STATIC VOID SortNodes(of_node_t ** array, ULONG count)
 
 /******************************************************************************
  *
+ * PropertyMatchesFilter()
+ *
+ ******************************************************************************/
+
+STATIC BOOL PropertyMatchesFilter(const of_property_t * prop)
+{
+    if (searchFilter[0] == '\0')
+    {
+        return (TRUE);
+    }
+
+    return (StringContains((CONST_STRPTR)prop->op_name, (CONST_STRPTR)searchFilter));
+}
+
+/******************************************************************************
+ *
+ * SubtreeMatchesFilter()
+ *
+ * Whether 'node' itself, one of its properties, or anything under one of
+ * its children matches searchFilter. Only meant to be called when a filter
+ * is actually set: see NodeMatchesFilter().
+ *
+ ******************************************************************************/
+
+STATIC BOOL SubtreeMatchesFilter(const of_node_t * node)
+{
+    const of_property_t * prop;
+    const of_node_t * child;
+
+    if (StringContains((CONST_STRPTR)node->on_name, (CONST_STRPTR)searchFilter))
+    {
+        return (TRUE);
+    }
+
+    for (prop = node->on_properties; prop != NULL; prop = prop->op_next)
+    {
+        if (StringContains((CONST_STRPTR)prop->op_name, (CONST_STRPTR)searchFilter))
+        {
+            return (TRUE);
+        }
+    }
+
+    for (child = node->on_children; child != NULL; child = child->on_next)
+    {
+        if (SubtreeMatchesFilter(child))
+        {
+            return (TRUE);
+        }
+    }
+
+    return (FALSE);
+}
+
+/******************************************************************************
+ *
+ * NodeMatchesFilter()
+ *
+ * Whether 'node' belongs in a filtered tree: either there is no filter, or
+ * 'node' is on the way to a match somewhere in its own subtree. Applied at
+ * every level by InsertNodes(), this alone is what keeps a match's parents
+ * in view while everything else is pruned away.
+ *
+ ******************************************************************************/
+
+STATIC BOOL NodeMatchesFilter(const of_node_t * node)
+{
+    if (searchFilter[0] == '\0')
+    {
+        return (TRUE);
+    }
+
+    return (SubtreeMatchesFilter(node));
+}
+
+/******************************************************************************
+ *
  * InsertProperty()
- * 
+ *
  ******************************************************************************/
 
 STATIC VOID InsertProperty(
@@ -538,10 +698,18 @@ STATIC VOID InsertProperties(
 {
     of_property_t ** array;
     of_property_t * p;
-    ULONG count;
+    ULONG count = 0;
     ULONG i;
 
-    if ((count = CountProperties(prop)) == 0)
+    for (p = prop; p != NULL; p = p->op_next)
+    {
+        if (PropertyMatchesFilter(p))
+        {
+            count++;
+        }
+    }
+
+    if (count == 0)
     {
         return;
     }
@@ -553,15 +721,21 @@ STATIC VOID InsertProperties(
     {
         for (p = prop; p != NULL; p = p->op_next)
         {
-            InsertProperty(tree, p, parent);
+            if (PropertyMatchesFilter(p))
+            {
+                InsertProperty(tree, p, parent);
+            }
         }
 
         return;
     }
 
-    for (i = 0, p = prop; (i < count) && (p != NULL); i++, p = p->op_next)
+    for (i = 0, p = prop; (i < count) && (p != NULL); p = p->op_next)
     {
-        array[i] = p;
+        if (PropertyMatchesFilter(p))
+        {
+            array[i++] = p;
+        }
     }
 
     SortProperties(array, count);
@@ -623,10 +797,18 @@ STATIC VOID InsertNodes(
 {
     of_node_t ** array;
     of_node_t * n;
-    ULONG count;
+    ULONG count = 0;
     ULONG i;
 
-    if ((count = CountNodes(node)) == 0)
+    for (n = node; n != NULL; n = n->on_next)
+    {
+        if (NodeMatchesFilter(n))
+        {
+            count++;
+        }
+    }
+
+    if (count == 0)
     {
         return;
     }
@@ -638,15 +820,21 @@ STATIC VOID InsertNodes(
     {
         for (n = node; n != NULL; n = n->on_next)
         {
-            InsertNode(tree, n, parent);
+            if (NodeMatchesFilter(n))
+            {
+                InsertNode(tree, n, parent);
+            }
         }
 
         return;
     }
 
-    for (i = 0, n = node; (i < count) && (n != NULL); i++, n = n->on_next)
+    for (i = 0, n = node; (i < count) && (n != NULL); n = n->on_next)
     {
-        array[i] = n;
+        if (NodeMatchesFilter(n))
+        {
+            array[i++] = n;
+        }
     }
 
     SortNodes(array, count);
@@ -680,9 +868,13 @@ STATIC ULONG BuildTree(ObjApp_t * object, struct DeviceTreeBase * base)
     InsertNodes(object->TR_Tree, base->dt_Root,
         (struct MUI_NListtree_TreeNode *)MUIV_NListtree_Insert_ListNode_Root);
 
+    /* A search result is small and only worth showing fully open: nothing
+       left to prune away, unlike the full tree's default top level only */
+
     DoMethod(object->TR_Tree, MUIM_NListtree_Open,
         MUIV_NListtree_Open_ListNode_Root,
-        MUIV_NListtree_Open_TreeNode_Head, 0);
+        (searchFilter[0] != '\0') ? MUIV_NListtree_Open_TreeNode_All
+                                  : MUIV_NListtree_Open_TreeNode_Head, 0);
 
     set(object->TR_Tree, MUIA_NListtree_Quiet, FALSE);
 
@@ -900,7 +1092,7 @@ STATIC APTR MakeHexEdit(CONST_STRPTR bytes, ULONG length)
         InputListFrame,
         MUIA_Font,                      MUIV_Font_Fixed,
         MUIA_CycleChain,                1,
-        MUIA_ShortHelp,                 "\33bHexadecimal Dump\33n\nDisplay the raw content of the Device Tree item.",
+        MUIA_ShortHelp,                 MUIX_B "Hexadecimal Dump" MUIX_N "\nDisplay the raw content of the Device Tree item.",
         MUIA_HexEdit_LowBound,          (IPTR)bytes,
         MUIA_HexEdit_HighBound,         (IPTR)(bytes + length - 1),
         MUIA_HexEdit_BaseAddressOffset, (IPTR)(-(LONG)bytes),
@@ -922,7 +1114,7 @@ STATIC APTR MakePlaceholder(CONST_STRPTR text)
         Child, VSpace(0),
         Child, TextObject,
             MUIA_Text_Contents, (IPTR)text,
-            MUIA_Text_PreParse, (IPTR)"\033c",
+            MUIA_Text_PreParse, (IPTR)MUIX_C,
             MUIA_Text_SetMax,   FALSE,
         End,
         Child, VSpace(0),
@@ -1227,7 +1419,7 @@ STATIC SAVEDS ASM ULONG InspectFunc(
             return (0);
         }
 
-        SPrintf(nameBuffer, sizeof(nameBuffer), (CONST_STRPTR)"\033o[0] %s",
+        SPrintf(nameBuffer, sizeof(nameBuffer), (CONST_STRPTR)MUIX_O "[0] %s",
             (IPTR)msg->TreeNode->tn_Name);
 
         *msg->Array++ = nameBuffer;
@@ -1238,8 +1430,8 @@ STATIC SAVEDS ASM ULONG InspectFunc(
         *msg->Array++ = (STRPTR)"Type";
         *msg->Array++ = (STRPTR)"Value";
 
-        *msg->Preparse++ = (STRPTR)"\033b";
-        *msg->Preparse++ = (STRPTR)"\033b";
+        *msg->Preparse++ = (STRPTR)MUIX_B;
+        *msg->Preparse++ = (STRPTR)MUIX_B;
     }
 
     return (0);
@@ -1826,7 +2018,9 @@ STATIC VOID DumpOneProperty(struct Writer * writer, const of_node_t * owner,
  * DumpProperties()
  *
  * A node's properties, one line each, in the order devicetree.resource
- * holds them (unsorted).
+ * holds them (unsorted). Subject to the same searchFilter as the tree
+ * view, via PropertyMatchesFilter(): an active search narrows an export
+ * down to what it would show on screen.
  *
  ******************************************************************************/
 
@@ -1835,7 +2029,10 @@ STATIC VOID DumpProperties(struct Writer * writer, const of_node_t * owner,
 {
     for (; prop != NULL; prop = prop->op_next)
     {
-        DumpOneProperty(writer, owner, prop, depth);
+        if (PropertyMatchesFilter(prop))
+        {
+            DumpOneProperty(writer, owner, prop, depth);
+        }
     }
 }
 
@@ -1918,7 +2115,9 @@ STATIC VOID DumpOneNode(struct Writer * writer, const of_node_t * node, ULONG de
  * DumpNode()
  *
  * One node, its properties, then its children: the whole tree from 'node'
- * down, in the order devicetree.resource holds it (unsorted).
+ * down, in the order devicetree.resource holds it (unsorted). Subject to
+ * the same searchFilter as the tree view, via NodeMatchesFilter(): a
+ * sibling is skipped unless it, or something under it, matches.
  *
  ******************************************************************************/
 
@@ -1926,7 +2125,10 @@ STATIC VOID DumpNode(struct Writer * writer, const of_node_t * node, ULONG depth
 {
     for (; node != NULL; node = node->on_next)
     {
-        DumpOneNode(writer, node, depth);
+        if (NodeMatchesFilter(node))
+        {
+            DumpOneNode(writer, node, depth);
+        }
     }
 }
 
@@ -1937,6 +2139,9 @@ STATIC VOID DumpNode(struct Writer * writer, const of_node_t * node, ULONG depth
  * Save the tree's currently selected entry, and everything below it, to a
  * plain text file, in the same wording FormatType()/DumpValue() give the
  * tree view. Selecting the root node "/" dumps the whole tree.
+ *
+ * An active search (searchFilter) narrows this down exactly as it does
+ * the tree view: only matching entries and their ancestors are written.
  *
  * Only the drawer is remembered between calls (exportDrawer, shared with
  * DoSave()): the initial file name is suggested from the entry itself,
@@ -2153,6 +2358,34 @@ VOID ProcessEvents(VOID)
             DoSaveNode(appMain);
             break;
 
+        case EVENT_SEARCH:
+            DoSearch(appMain);
+            break;
+
+        case EVENT_TOGGLESEARCH:
+            DoToggleSearch(appMain);
+            break;
+
+        case EVENT_EXPAND:
+            DoMethod(appMain->TR_Tree, MUIM_NListtree_Open,
+                MUIV_NListtree_Open_ListNode_Root,
+                MUIV_NListtree_Open_TreeNode_All, 0);
+            break;
+
+        case EVENT_COLLAPSE:
+            DoMethod(appMain->TR_Tree, MUIM_NListtree_Close,
+                MUIV_NListtree_Close_ListNode_Root,
+                MUIV_NListtree_Close_TreeNode_All, 0);
+            break;
+
+        case EVENT_MUISETTINGS:
+            DoMethod(appMain->App, MUIM_Application_OpenConfigWindow, 0);
+            break;
+
+        case EVENT_ICONIFY:
+            set(appMain->App, MUIA_Application_Iconified, TRUE);
+            break;
+
         case EVENT_FIRST:
         case EVENT_PREV:
         case EVENT_NEXT:
@@ -2203,6 +2436,48 @@ VOID ProcessEvents(VOID)
 
 /******************************************************************************
  *
+ * MENU
+ *
+ * A classic gadtools.library NewMenu array, handed to
+ * MUI_MakeObject(MUIO_MenustripNM, ...) to build the whole menu strip in
+ * one call. Every real action's nm_UserData is a ProcessEvent_t: MUI
+ * delivers it straight back as MUIM_Application_Input's return value when
+ * the item is picked (by mouse or by its nm_CommKey shortcut), so no
+ * per-item MUIM_Notify wiring is needed the way a hand-built MenustripObject
+ * tree would require. MI_FullNames/MI_ShowSearch's toggled state is looked
+ * up once after creation via MUIM_FindUData (see CreateApp()), since
+ * nothing here keeps a pointer to the item objects themselves.
+ *
+ ******************************************************************************/
+
+STATIC struct NewMenu menuData[] =
+{
+    { NM_TITLE, (CONST_STRPTR)"Project",            NULL,  0,                          0, (APTR)0 },
+    { NM_ITEM,  (CONST_STRPTR)"Reload...",          "L",   0,                          0, (APTR)EVENT_RELOAD },
+    { NM_ITEM,  (CONST_STRPTR)"Save node as...",    "A",   0,                          0, (APTR)EVENT_SAVENODE },
+    { NM_ITEM,  NM_BARLABEL,                        NULL,  0,                          0, (APTR)0 },
+    { NM_ITEM,  (CONST_STRPTR)"Use full names",     "N",   CHECKIT|MENUTOGGLE|CHECKED, 0, (APTR)EVENT_FULLNAMES },
+    { NM_ITEM,  NM_BARLABEL,                        NULL,  0,                          0, (APTR)0 },
+    { NM_ITEM,  (CONST_STRPTR)"About...",           "?",   0,                          0, (APTR)EVENT_ABOUT },
+    { NM_ITEM,  (CONST_STRPTR)"About MUI...",       NULL,  0,                          0, (APTR)EVENT_ABOUT_MUI },
+    { NM_ITEM,  NM_BARLABEL,                        NULL,  0,                          0, (APTR)0 },
+    { NM_ITEM,  (CONST_STRPTR)"Settings MUI...",    NULL,  0,                          0, (APTR)EVENT_MUISETTINGS },
+    { NM_ITEM,  NM_BARLABEL,                        NULL,  0,                          0, (APTR)0 },
+    { NM_ITEM,  (CONST_STRPTR)"Iconify",            "I",   0,                          0, (APTR)EVENT_ICONIFY },
+    { NM_ITEM,  NM_BARLABEL,                        NULL,  0,                          0, (APTR)0 },
+    { NM_ITEM,  (CONST_STRPTR)"Quit",               "Q",   0,                          0, (APTR)EVENT_QUIT },
+
+    { NM_TITLE, (CONST_STRPTR)"Tree",               NULL,  0,                          0, (APTR)0 },
+    { NM_ITEM,  (CONST_STRPTR)"Expand All",         "E",   0,                          0, (APTR)EVENT_EXPAND },
+    { NM_ITEM,  (CONST_STRPTR)"Collapse All",       "C",   0,                          0, (APTR)EVENT_COLLAPSE },
+    { NM_ITEM,  NM_BARLABEL,                        NULL,  0,                          0, (APTR)0 },
+    { NM_ITEM,  (CONST_STRPTR)"Show search gadget", "F",   CHECKIT|MENUTOGGLE|CHECKED, 0, (APTR)EVENT_TOGGLESEARCH },
+
+    { NM_END,   NULL,                               NULL,  0,                          0, (APTR)0 }
+};
+
+/******************************************************************************
+ *
  * CreateApp()
  *
  ******************************************************************************/
@@ -2231,38 +2506,23 @@ ObjApp_t * CreateApp(VOID)
 
     /* MUI MenuStrips */
     
-    object->MN_Main = MenustripObject,
-        MUIA_Family_Child, MenuObjectT("Project"),
-            MUIA_Family_Child, object->MI_Reload      = MakeMenuItem("Reload...", "L"),
-            MUIA_Family_Child, object->MI_SaveNode    = MakeMenuItem("Save node as...", "A"),
-            MUIA_Family_Child, MakeMenuBar(),
-            MUIA_Family_Child, object->MI_FullNames   = MenuitemObject,
-                MUIA_Menuitem_Title,    "Use full names",
-                MUIA_Menuitem_Shortcut, "F",
-                MUIA_Menuitem_Checkit,  TRUE,
-                MUIA_Menuitem_Toggle,   TRUE,
-                MUIA_Menuitem_Checked,  TRUE,
-            End,
-            MUIA_Family_Child, MakeMenuBar(),
-            MUIA_Family_Child, object->MI_About       = MakeMenuItem("About...", "?"),
-            MUIA_Family_Child, object->MI_AboutMUI    = MakeMenuItem("About MUI...", NULL),
-            MUIA_Family_Child, MakeMenuBar(),
-            MUIA_Family_Child, object->MI_MuiSettings = MakeMenuItem("Settings MUI...", NULL),
-            MUIA_Family_Child, MakeMenuBar(),
-            MUIA_Family_Child, object->MI_Iconify     = MakeMenuItem("Iconify", "I"),
-            MUIA_Family_Child, MakeMenuBar(),
-            MUIA_Family_Child, object->MI_Quit        = MakeMenuItem("Quit", "Q"),
-        End,
-        MUIA_Family_Child, MenuObjectT("Tree"),
-            MUIA_Family_Child, object->MI_Expand      = MakeMenuItem("Expand All", "E"),
-            MUIA_Family_Child, object->MI_Collapse    = MakeMenuItem("Collapse All", "C"),
-        End,
-    End;
+    object->MN_Main = (APTR)MUI_MakeObject(MUIO_MenustripNM, menuData, 0);
+
+    if (object->MN_Main == NULL)
+    {
+        FreeVec(object);
+        return (NULL);
+    }
+
+    object->MI_FullNames  = (APTR)DoMethod(object->MN_Main,
+        MUIM_FindUData, EVENT_FULLNAMES);
+    object->MI_ShowSearch = (APTR)DoMethod(object->MN_Main,
+        MUIM_FindUData, EVENT_TOGGLESEARCH);
 
     /* MUI NListview */
     
     object->LV_Tree = NListviewObject,
-        MUIA_ShortHelp,       "\33bDeviceTree Explorer\33n\nExplore the DeviceTree.resource items",
+        MUIA_ShortHelp,       MUIX_B "DeviceTree Explorer" MUIX_N "\nExplore the DeviceTree.resource items",
         MUIA_CycleChain,      TRUE,
         MUIA_NListview_NList, object->TR_Tree = NListtreeObject,
             InputListFrame,
@@ -2297,8 +2557,8 @@ ObjApp_t * CreateApp(VOID)
             Child, VGroup,
                 MUIA_HorizWeight, 50,
                 Child, object->LV_Inspect = NListviewObject,
-                    MUIA_ShortHelp, 
-                        "\33bData Inspector\33n\n"
+                    MUIA_ShortHelp,
+                        MUIX_B "Data Inspector" MUIX_N "\n"
                         "Inspect the value under the cursor.",
                     MUIA_NListview_NList, object->NL_Inspect = NListtreeObject,
                         ReadListFrame,
@@ -2324,13 +2584,13 @@ ObjApp_t * CreateApp(VOID)
                         MUIA_CycleChain,    1,
                         MUIA_Cycle_Entries, endianEntries,
                         MUIA_Cycle_Active,  0,
-                        MUIA_ShortHelp,     "\33bData Inspector\33n\nSelect how to read the value.",
+                        MUIA_ShortHelp,     MUIX_B "Data Inspector" MUIX_N "\nSelect how to read the value.",
                     End,
                     Child, object->CY_Base = CycleObject,
                         MUIA_CycleChain,    1,
                         MUIA_Cycle_Entries, baseEntries,
                         MUIA_Cycle_Active,  BASE_DECIMAL,
-                        MUIA_ShortHelp,     "\33bData Inspector\33n\nSelect how to display the value.",
+                        MUIA_ShortHelp,     MUIX_B "Data Inspector" MUIX_N "\nSelect how to display the value.",
                     End,
                 End,
             End,
@@ -2355,12 +2615,25 @@ ObjApp_t * CreateApp(VOID)
         MUIA_Window_SizeRight,  FALSE,
         MUIA_Window_Width,      WIN_MAIN_WIDTH,
         MUIA_Window_Height,     WIN_MAIN_HEIGHT,
-        WindowContents, VGroup,
+        WindowContents, object->GR_Main = VGroup,
             MUIA_InnerLeft,   4,
             MUIA_InnerRight,  4,
             MUIA_InnerTop,    4,
             MUIA_InnerBottom, 4,
             Child, object->LV_Tree,
+            Child, object->GR_Search = HGroup,
+                MUIA_VertWeight, 0,
+                Child, object->ST_Search = StringObject,
+                    StringFrame,
+                    MUIA_CycleChain,     TRUE,
+                    MUIA_String_MaxLen,  (LONG)sizeof(searchFilter),
+                    MUIA_ShortHelp,
+                        MUIX_B "Search" MUIX_N "\n"
+                        "Press RETURN to filter the tree down to the nodes and properties\n"
+                        "whose name contains this text (case insensitive search).\n"
+                        "Clear and press RETURN again to show everything.",
+                End,
+            End,
         End,
     End;
 
@@ -2410,16 +2683,6 @@ ObjApp_t * CreateApp(VOID)
     DoMethod(object->WI_Main, MUIM_Notify, MUIA_Window_CloseRequest, TRUE, 
         object->App, 2, MUIM_Application_ReturnID, MUIV_Application_ReturnID_Quit);
 
-    DoMethod(object->MI_Expand, MUIM_Notify, MUIA_Menuitem_Trigger, MUIV_EveryTime, 
-        object->TR_Tree, 4, MUIM_NListtree_Open, 
-            MUIV_NListtree_Open_ListNode_Root, 
-            MUIV_NListtree_Open_TreeNode_All, 0);
-
-    DoMethod(object->MI_Collapse, MUIM_Notify, MUIA_Menuitem_Trigger, MUIV_EveryTime, 
-        object->TR_Tree, 4, MUIM_NListtree_Close, 
-            MUIV_NListtree_Close_ListNode_Root, 
-            MUIV_NListtree_Close_TreeNode_All, 0);
-
     DoMethod(object->TR_Tree, MUIM_Notify, MUIA_NListtree_DoubleClick, MUIV_EveryTime,
         object->App, 2, MUIM_Application_ReturnID, EVENT_NODEINFO);
 
@@ -2462,26 +2725,8 @@ ObjApp_t * CreateApp(VOID)
     DoMethod(object->NL_Inspect, MUIM_Notify, MUIA_NListtree_DoubleClick, MUIV_EveryTime,
         object->App, 2, MUIM_Application_ReturnID, EVENT_COPYCELL);
 
-    DoMethod(object->MI_MuiSettings, MUIM_Notify, MUIA_Menuitem_Trigger, MUIV_EveryTime, 
-        object->App, 2, MUIM_Application_OpenConfigWindow, 0);
-
-    DoMethod(object->MI_Iconify, MUIM_Notify, MUIA_Menuitem_Trigger, MUIV_EveryTime, 
-        object->App, 3, MUIM_Set, MUIA_Application_Iconified, TRUE);
-
-    DoMethod(object->MI_Reload, MUIM_Notify, MUIA_Menuitem_Trigger, MUIV_EveryTime,
-        object->App, 2, MUIM_Application_ReturnID, EVENT_RELOAD);
-
-    DoMethod(object->MI_SaveNode, MUIM_Notify, MUIA_Menuitem_Trigger, MUIV_EveryTime,
-        object->App, 2, MUIM_Application_ReturnID, EVENT_SAVENODE);
-
-    DoMethod(object->MI_About, MUIM_Notify, MUIA_Menuitem_Trigger, MUIV_EveryTime, 
-        object->App, 2, MUIM_Application_ReturnID, EVENT_ABOUT);
-
-    DoMethod(object->MI_AboutMUI, MUIM_Notify, MUIA_Menuitem_Trigger, MUIV_EveryTime, 
-        object->App, 2, MUIM_Application_ReturnID, EVENT_ABOUT_MUI);
-
-    DoMethod(object->MI_Quit, MUIM_Notify, MUIA_Menuitem_Trigger, MUIV_EveryTime, 
-        object->App, 2, MUIM_Application_ReturnID, EVENT_QUIT);
+    DoMethod(object->ST_Search, MUIM_Notify, MUIA_String_Acknowledge, MUIV_EveryTime,
+        object->App, 2, MUIM_Application_ReturnID, EVENT_SEARCH);
 
     /* Final inits */
     
@@ -2504,9 +2749,23 @@ VOID DisposeApp(ObjApp_t * object)
 {
     if (object)
     {
+        ULONG checked = TRUE;
+
         set(object->WI_Info, MUIA_Window_Open, FALSE);
         set(object->WI_Main, MUIA_Window_Open, FALSE);
         DoMethod(object->TR_Tree, MUIM_NListtree_Clear, NULL, 0);
+
+        /* DoToggleSearch() may have removed GR_Search from GR_Main; if it
+           is hidden right now, parent it back so MUI_DisposeObject() below
+           actually reaches and frees it instead of leaking it */
+
+        get(object->MI_ShowSearch, MUIA_Menuitem_Checked, &checked);
+
+        if (!checked)
+        {
+            DoMethod(object->GR_Main, OM_ADDMEMBER, (IPTR)object->GR_Search);
+        }
+
         MUI_DisposeObject(object->App);
         FreeVec(object);
     }
