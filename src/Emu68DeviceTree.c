@@ -102,8 +102,15 @@ STATIC VOID  DoCursor(ObjApp_t * object, ULONG where);
 STATIC VOID  DoNodeInfo(ObjApp_t * object);
 STATIC VOID  DoReload(ObjApp_t * object);
 STATIC VOID  DoSave(ObjApp_t * object);
-STATIC VOID  DoDumpAll(ObjApp_t * object);
-STATIC VOID  DumpProperties(struct Writer * writer, const of_property_t * prop, ULONG depth);
+STATIC VOID  DoSaveNode(ObjApp_t * object);
+STATIC VOID  DumpValue(struct Writer * writer, const of_property_t * prop);
+STATIC VOID  DumpIndent(struct Writer * writer, ULONG depth);
+STATIC VOID  DumpNodePath(struct Writer * writer, const of_node_t * node);
+STATIC VOID  DumpOneProperty(struct Writer * writer, const of_node_t * owner,
+                 const of_property_t * prop, ULONG depth);
+STATIC VOID  DumpProperties(struct Writer * writer, const of_node_t * owner,
+                 const of_property_t * prop, ULONG depth);
+STATIC VOID  DumpOneNode(struct Writer * writer, const of_node_t * node, ULONG depth);
 STATIC VOID  DumpNode(struct Writer * writer, const of_node_t * node, ULONG depth);
 
 /******************************************************************************
@@ -234,6 +241,11 @@ STATIC UBYTE infoLengthBuffer[32];
 
 STATIC ULONG sortColumn  = SORT_BY_NAME;
 STATIC BOOL  sortReverse = FALSE;
+
+/* Whether a Dump writes each node's own name or its full path (MI_FullNames'
+   checked state, read into this at the start of DoSaveNode()) */
+
+STATIC BOOL  dumpFullNames = TRUE;
 
 /* Column names, indexed by SORT_BY_#? */
 
@@ -1498,39 +1510,32 @@ STATIC VOID DoNodeInfo(ObjApp_t * object)
 
 #define HEX_PER_LINE (16)
 
-STATIC VOID WriteValue(struct Writer * writer, CONST_STRPTR text)
+/******************************************************************************
+ *
+ * DumpValue()
+ *
+ * A property's whole value, in full, shaped after its type:
+ *
+ *   string       the string itself
+ *   string list  one string per line, the empty ones skipped
+ *   blob         every byte in hexadecimal, sixteen per line
+ *   long, quad   the value as the Value column words it
+ *
+ * Nothing is gathered in a buffer first: the writer is fed piece by piece,
+ * so a property of any size costs a few dozen bytes of stack. Callers are
+ * expected to have already ruled out an empty property (NULL op_value or a
+ * zero op_length), which this never writes anything for on its own.
+ *
+ ******************************************************************************/
+
+STATIC VOID DumpValue(struct Writer * writer, const of_property_t * prop)
 {
     UBYTE line[64];
-    CONST_STRPTR bytes;
-    ULONG length;
+    CONST_STRPTR bytes = (CONST_STRPTR)prop->op_value;
+    ULONG length = prop->op_length;
     ULONG i;
 
-    if (text != NULL)
-    {
-        /* One cell of the inspector, handed over as it stands */
-
-        WriterWrite(writer, text, StringLength(text));
-        return;
-    }
-
-    if (shownProp == NULL)
-    {
-        /* A node: its path */
-
-        WriterWrite(writer, (CONST_STRPTR)infoPathBuffer,
-            StringLength((CONST_STRPTR)infoPathBuffer));
-        return;
-    }
-
-    bytes  = (CONST_STRPTR)shownProp->op_value;
-    length = shownProp->op_length;
-
-    if ((bytes == NULL) || (length == 0))
-    {
-        return; /* Nothing to say */
-    }
-
-    switch (EntryType(shownProp))
+    switch (EntryType(prop))
     {
     case ENTRY_TYPE_STRING:
         {
@@ -1593,11 +1598,38 @@ STATIC VOID WriteValue(struct Writer * writer, CONST_STRPTR text)
 
         /* A number, worded as the tree words it */
 
-        FormatValue(shownProp, line, (LONG)sizeof(line));
+        FormatValue(prop, line, (LONG)sizeof(line));
 
         WriterWrite(writer, (CONST_STRPTR)line, StringLength((CONST_STRPTR)line));
         break;
     }
+}
+
+STATIC VOID WriteValue(struct Writer * writer, CONST_STRPTR text)
+{
+    if (text != NULL)
+    {
+        /* One cell of the inspector, handed over as it stands */
+
+        WriterWrite(writer, text, StringLength(text));
+        return;
+    }
+
+    if (shownProp == NULL)
+    {
+        /* A node: its path */
+
+        WriterWrite(writer, (CONST_STRPTR)infoPathBuffer,
+            StringLength((CONST_STRPTR)infoPathBuffer));
+        return;
+    }
+
+    if ((shownProp->op_value == NULL) || (shownProp->op_length == 0))
+    {
+        return; /* Nothing to say */
+    }
+
+    DumpValue(writer, shownProp);
 }
 
 /******************************************************************************
@@ -1643,14 +1675,22 @@ STATIC VOID DoCopy(ObjApp_t * object, CONST_STRPTR text)
  * is what one wants byte for byte, to feed a disassembler or a dtc.
  * 
  * A node has no value of its own, so there is nothing to save for one.
- * 
+ *
+ * The drawer it was last confirmed with is remembered in exportDrawer,
+ * shared with DoSaveNode(): both save to disk, so a folder picked for one
+ * is offered again for the other. The suggested file name always ends in
+ * ".raw", to tell these raw byte dumps apart from DoSaveNode()'s ".txt".
+ *
  ******************************************************************************/
+
+STATIC UBYTE exportDrawer[MAX_PATHNAME] = "RAM:";
 
 STATIC VOID DoSave(ObjApp_t * object)
 {
     struct FileRequester * request;
     struct Writer writer;
     UBYTE path[MAX_PATHNAME];
+    UBYTE fileName[128];
     BOOL ok = TRUE;
 
     if ((shownProp == NULL) ||
@@ -1664,11 +1704,14 @@ STATIC VOID DoSave(ObjApp_t * object)
         return;
     }
 
+    SPrintf(fileName, sizeof(fileName), (CONST_STRPTR)"%s.raw",
+        (IPTR)((shownProp->op_name != NULL) ? shownProp->op_name : ""));
+
     request = (struct FileRequester *)MUI_AllocAslRequestTags(ASL_FileRequest,
-        ASLFR_TitleText,   (IPTR)"Save the raw bytes to...",
-        ASLFR_DoSaveMode,  TRUE,
-        ASLFR_InitialFile, (IPTR)((shownProp->op_name != NULL)
-                                    ? shownProp->op_name : ""),
+        ASLFR_TitleText,     (IPTR)"Save the raw bytes to...",
+        ASLFR_DoSaveMode,    TRUE,
+        ASLFR_InitialDrawer, (IPTR)exportDrawer,
+        ASLFR_InitialFile,   (IPTR)fileName,
         TAG_DONE);
 
     if (request == NULL)
@@ -1679,6 +1722,8 @@ STATIC VOID DoSave(ObjApp_t * object)
     if (MUI_AslRequestTags(request, TAG_DONE))
     {
         ok = FALSE;
+
+        StringCopy(exportDrawer, (CONST_STRPTR)request->fr_Drawer, (LONG)sizeof(exportDrawer));
 
         StringCopy(path, (CONST_STRPTR)request->fr_Drawer, (LONG)sizeof(path));
 
@@ -1706,41 +1751,166 @@ STATIC VOID DoSave(ObjApp_t * object)
 
 /******************************************************************************
  *
- * DumpProperties()
- *
- * One node's properties, one line each: name, type and the same value a
- * glance at the tree already shows.
+ * DumpIndent()
  *
  ******************************************************************************/
 
 #define DUMP_INDENT "    "
 
-STATIC VOID DumpProperties(struct Writer * writer, const of_property_t * prop, ULONG depth)
+STATIC VOID DumpIndent(struct Writer * writer, ULONG depth)
+{
+    while (depth-- > 0)
+    {
+        WriterWrite(writer, (CONST_STRPTR)DUMP_INDENT,
+            (LONG)StringLength((CONST_STRPTR)DUMP_INDENT));
+    }
+}
+
+/******************************************************************************
+ *
+ * DumpOneProperty()
+ *
+ * One line: name, type and the same value a glance at the tree already
+ * shows. Never follows op_next, so it dumps this property alone.
+ *
+ * Indented under 'owner' the plain way, or, when dumpFullNames is set, not
+ * indented at all and prefixed with owner's own full path instead ("/chosen/
+ * stdout-path: ...") -- every line then stands on its own for a grep, tree
+ * structure and all.
+ *
+ ******************************************************************************/
+
+STATIC VOID DumpOneProperty(struct Writer * writer, const of_node_t * owner,
+    const of_property_t * prop, ULONG depth)
 {
     UBYTE type[32];
-    UBYTE value[64];
+    ULONG entryType = EntryType(prop);
+    BOOL hasValue = (prop->op_value != NULL) && (prop->op_length > 0);
 
-    for (; prop != NULL; prop = prop->op_next)
+    if (dumpFullNames)
     {
-        ULONG i;
+        DumpNodePath(writer, owner);
+        WriterWrite(writer, (CONST_STRPTR)"/", 1);
+    }
+    else
+    {
+        DumpIndent(writer, depth);
+    }
 
-        for (i = 0; i < depth; i++)
-        {
-            WriterWrite(writer, (CONST_STRPTR)DUMP_INDENT,
-                (LONG)StringLength((CONST_STRPTR)DUMP_INDENT));
-        }
+    FormatType(prop, type, sizeof(type));
 
-        FormatType(prop, type, sizeof(type));
-        FormatValue(prop, value, sizeof(value));
+    WriterWrite(writer, (CONST_STRPTR)prop->op_name,
+        StringLength((CONST_STRPTR)prop->op_name));
+    WriterWrite(writer, (CONST_STRPTR)": ", 2);
+    WriterWrite(writer, (CONST_STRPTR)type, StringLength((CONST_STRPTR)type));
+    WriterWrite(writer, (CONST_STRPTR)" = ", 3);
 
-        WriterWrite(writer, (CONST_STRPTR)prop->op_name,
-            StringLength((CONST_STRPTR)prop->op_name));
-        WriterWrite(writer, (CONST_STRPTR)": ", 2);
-        WriterWrite(writer, (CONST_STRPTR)type, StringLength((CONST_STRPTR)type));
-        WriterWrite(writer, (CONST_STRPTR)" = ", 3);
-        WriterWrite(writer, (CONST_STRPTR)value, StringLength((CONST_STRPTR)value));
+    if (!hasValue)
+    {
+        WriterWrite(writer, (CONST_STRPTR)"-\n", 2);
+        return;
+    }
+
+    DumpValue(writer, prop);
+
+    /* DumpValue() already ends a blob's last hex line with its own '\n' */
+
+    if (entryType != ENTRY_TYPE_BLOB)
+    {
         WriterWrite(writer, (CONST_STRPTR)"\n", 1);
     }
+}
+
+/******************************************************************************
+ *
+ * DumpProperties()
+ *
+ * A node's properties, one line each, in the order devicetree.resource
+ * holds them (unsorted).
+ *
+ ******************************************************************************/
+
+STATIC VOID DumpProperties(struct Writer * writer, const of_node_t * owner,
+    const of_property_t * prop, ULONG depth)
+{
+    for (; prop != NULL; prop = prop->op_next)
+    {
+        DumpOneProperty(writer, owner, prop, depth);
+    }
+}
+
+/******************************************************************************
+ *
+ * DumpNodePath()
+ *
+ * A node's full path, walking on_parent up to the root, then writing each
+ * name from there back down ("/chosen", "/regulator-cam1", ...). Nothing at
+ * all for the root itself, whose on_name is empty: DumpOneNode's own "/\n"
+ * is enough for that line.
+ *
+ ******************************************************************************/
+
+STATIC VOID DumpNodePath(struct Writer * writer, const of_node_t * node)
+{
+    const of_node_t * stack[MAX_TREE_DEPTH];
+    LONG depth = 0;
+
+    while ((node != NULL) && (depth < MAX_TREE_DEPTH))
+    {
+        stack[depth++] = node;
+        node = node->on_parent;
+    }
+
+    while (depth-- > 0)
+    {
+        CONST_STRPTR name = (CONST_STRPTR)stack[depth]->on_name;
+
+        if ((name == NULL) || (name[0] == '\0'))
+        {
+            continue;
+        }
+
+        WriterWrite(writer, (CONST_STRPTR)"/", 1);
+        WriterWrite(writer, name, StringLength(name));
+    }
+}
+
+/******************************************************************************
+ *
+ * DumpOneNode()
+ *
+ * One node, its properties, then its children: the whole subtree under
+ * 'node', but never its siblings (on_next is left untouched).
+ *
+ * The node's own line names it either the plain way ("chosen/"), indented,
+ * or, when dumpFullNames is set, by its full path ("/chosen/") with no
+ * indentation at all -- every line then stands on its own for a grep, tree
+ * structure and all.
+ *
+ ******************************************************************************/
+
+STATIC VOID DumpOneNode(struct Writer * writer, const of_node_t * node, ULONG depth)
+{
+    if (dumpFullNames)
+    {
+        DumpNodePath(writer, node);
+    }
+    else
+    {
+        CONST_STRPTR name = (CONST_STRPTR)node->on_name;
+
+        DumpIndent(writer, depth);
+
+        if ((name != NULL) && (name[0] != '\0'))
+        {
+            WriterWrite(writer, name, StringLength(name));
+        }
+    }
+
+    WriterWrite(writer, (CONST_STRPTR)"/\n", 2);
+
+    DumpProperties(writer, node, node->on_properties, depth + 1);
+    DumpNode(writer, node->on_children, depth + 1);
 }
 
 /******************************************************************************
@@ -1756,59 +1926,64 @@ STATIC VOID DumpNode(struct Writer * writer, const of_node_t * node, ULONG depth
 {
     for (; node != NULL; node = node->on_next)
     {
-        CONST_STRPTR name = (CONST_STRPTR)node->on_name;
-        ULONG i;
-
-        if ((name == NULL) || (name[0] == '\0'))
-        {
-            name = (CONST_STRPTR)"/";
-        }
-
-        for (i = 0; i < depth; i++)
-        {
-            WriterWrite(writer, (CONST_STRPTR)DUMP_INDENT,
-                (LONG)StringLength((CONST_STRPTR)DUMP_INDENT));
-        }
-
-        WriterWrite(writer, name, StringLength(name));
-        WriterWrite(writer, (CONST_STRPTR)"/\n", 2);
-
-        DumpProperties(writer, node->on_properties, depth + 1);
-        DumpNode(writer, node->on_children, depth + 1);
+        DumpOneNode(writer, node, depth);
     }
 }
 
 /******************************************************************************
  *
- * DoDumpAll()
+ * DoSaveNode()
  *
- * Save the whole device tree to a plain text file, one indented line per
- * node or property, in the same wording FormatType()/FormatValue() give the
- * tree view. The ASL requester remembers the drawer and file name it was
- * last confirmed with, defaulting to RAM:DeviceTree.txt on first use.
+ * Save the tree's currently selected entry, and everything below it, to a
+ * plain text file, in the same wording FormatType()/DumpValue() give the
+ * tree view. Selecting the root node "/" dumps the whole tree.
+ *
+ * Only the drawer is remembered between calls (exportDrawer, shared with
+ * DoSave()): the initial file name is suggested from the entry itself,
+ * since it changes with every use.
  *
  ******************************************************************************/
 
-STATIC UBYTE dumpDrawer[MAX_PATHNAME] = "RAM:";
-STATIC UBYTE dumpFile[108]            = "DeviceTree.txt";
-
-STATIC VOID DoDumpAll(ObjApp_t * object)
+STATIC VOID DoSaveNode(ObjApp_t * object)
 {
+    struct MUI_NListtree_TreeNode * tn = NULL;
     struct FileRequester * request;
     struct Writer writer;
     UBYTE path[MAX_PATHNAME];
+    UBYTE fileName[128];
+    CONST_STRPTR entryName;
+    ULONG checked = FALSE;
     BOOL ok = TRUE;
 
-    if ((DTBase == NULL) || (DTBase->dt_Root == NULL))
+    get(object->TR_Tree, MUIA_NListtree_Active, &tn);
+
+    if ((tn == NULL) || ((IPTR)tn == (IPTR)MUIV_NListtree_Active_Off))
     {
+        MUI_Request(object->App, object->WI_Main, 0,
+            (STRPTR)APP_NAME, (STRPTR)"*_Ok",
+            (STRPTR)"Select a node or a property first.");
+
         return;
     }
 
+    get(object->MI_FullNames, MUIA_Menuitem_Checked, &checked);
+    dumpFullNames = (BOOL)(checked != 0);
+
+    entryName = (CONST_STRPTR)tn->tn_Name;
+
+    if ((entryName == NULL) || (entryName[0] == '\0') ||
+        ((entryName[0] == '/') && (entryName[1] == '\0')))
+    {
+        entryName = (CONST_STRPTR)"DeviceTree";
+    }
+
+    SPrintf(fileName, sizeof(fileName), (CONST_STRPTR)"%s.txt", (IPTR)entryName);
+
     request = (struct FileRequester *)MUI_AllocAslRequestTags(ASL_FileRequest,
-        ASLFR_TitleText,     (IPTR)"Dump the whole tree to...",
+        ASLFR_TitleText,     (IPTR)"Save this entry to...",
         ASLFR_DoSaveMode,    TRUE,
-        ASLFR_InitialDrawer, (IPTR)dumpDrawer,
-        ASLFR_InitialFile,   (IPTR)dumpFile,
+        ASLFR_InitialDrawer, (IPTR)exportDrawer,
+        ASLFR_InitialFile,   (IPTR)fileName,
         TAG_DONE);
 
     if (request == NULL)
@@ -1820,8 +1995,7 @@ STATIC VOID DoDumpAll(ObjApp_t * object)
     {
         ok = FALSE;
 
-        StringCopy(dumpDrawer, (CONST_STRPTR)request->fr_Drawer, (LONG)sizeof(dumpDrawer));
-        StringCopy(dumpFile,   (CONST_STRPTR)request->fr_File,   (LONG)sizeof(dumpFile));
+        StringCopy(exportDrawer, (CONST_STRPTR)request->fr_Drawer, (LONG)sizeof(exportDrawer));
 
         StringCopy(path, (CONST_STRPTR)request->fr_Drawer, (LONG)sizeof(path));
 
@@ -1829,7 +2003,23 @@ STATIC VOID DoDumpAll(ObjApp_t * object)
         {
             if (WriterOpenFile(&writer, (CONST_STRPTR)path))
             {
-                DumpNode(&writer, DTBase->dt_Root, 0);
+                if (tn->tn_Flags & TNF_LIST)
+                {
+                    DumpOneNode(&writer, (const of_node_t *)tn->tn_User, 0);
+                }
+                else
+                {
+                    struct MUI_NListtree_TreeNode * parentTn =
+                        (struct MUI_NListtree_TreeNode *)DoMethod(object->TR_Tree,
+                            MUIM_NListtree_GetEntry, (IPTR)tn,
+                            MUIV_NListtree_GetEntry_Position_Parent, 0);
+
+                    const of_node_t * owner = (parentTn != NULL)
+                        ? (const of_node_t *)parentTn->tn_User : NULL;
+
+                    DumpOneProperty(&writer, owner,
+                        (const of_property_t *)tn->tn_User, 0);
+                }
 
                 ok = WriterClose(&writer);
             }
@@ -1842,7 +2032,7 @@ STATIC VOID DoDumpAll(ObjApp_t * object)
     {
         MUI_Request(object->App, object->WI_Main, 0,
             (STRPTR)APP_NAME, (STRPTR)"*_Ok",
-            (STRPTR)"The device tree could not be dumped to that file.");
+            (STRPTR)"The entry could not be dumped to that file.");
     }
 }
 
@@ -1959,8 +2149,8 @@ VOID ProcessEvents(VOID)
             DoSave(appMain);
             break;
 
-        case EVENT_DUMPALL:
-            DoDumpAll(appMain);
+        case EVENT_SAVENODE:
+            DoSaveNode(appMain);
             break;
 
         case EVENT_FIRST:
@@ -2043,7 +2233,16 @@ ObjApp_t * CreateApp(VOID)
     
     object->MN_Main = MenustripObject,
         MUIA_Family_Child, MenuObjectT("Project"),
-            MUIA_Family_Child, object->MI_Reload      = MakeMenuItem("Reload the tree", "L"),
+            MUIA_Family_Child, object->MI_Reload      = MakeMenuItem("Reload...", "L"),
+            MUIA_Family_Child, object->MI_SaveNode    = MakeMenuItem("Save node as...", "A"),
+            MUIA_Family_Child, MakeMenuBar(),
+            MUIA_Family_Child, object->MI_FullNames   = MenuitemObject,
+                MUIA_Menuitem_Title,    "Use full names",
+                MUIA_Menuitem_Shortcut, "F",
+                MUIA_Menuitem_Checkit,  TRUE,
+                MUIA_Menuitem_Toggle,   TRUE,
+                MUIA_Menuitem_Checked,  TRUE,
+            End,
             MUIA_Family_Child, MakeMenuBar(),
             MUIA_Family_Child, object->MI_About       = MakeMenuItem("About...", "?"),
             MUIA_Family_Child, object->MI_AboutMUI    = MakeMenuItem("About MUI...", NULL),
@@ -2057,8 +2256,6 @@ ObjApp_t * CreateApp(VOID)
         MUIA_Family_Child, MenuObjectT("Tree"),
             MUIA_Family_Child, object->MI_Expand      = MakeMenuItem("Expand All", "E"),
             MUIA_Family_Child, object->MI_Collapse    = MakeMenuItem("Collapse All", "C"),
-            MUIA_Family_Child, MakeMenuBar(),
-            MUIA_Family_Child, object->MI_DumpAll     = MakeMenuItem("Dump All", "D"),
         End,
     End;
 
@@ -2274,8 +2471,8 @@ ObjApp_t * CreateApp(VOID)
     DoMethod(object->MI_Reload, MUIM_Notify, MUIA_Menuitem_Trigger, MUIV_EveryTime,
         object->App, 2, MUIM_Application_ReturnID, EVENT_RELOAD);
 
-    DoMethod(object->MI_DumpAll, MUIM_Notify, MUIA_Menuitem_Trigger, MUIV_EveryTime,
-        object->App, 2, MUIM_Application_ReturnID, EVENT_DUMPALL);
+    DoMethod(object->MI_SaveNode, MUIM_Notify, MUIA_Menuitem_Trigger, MUIV_EveryTime,
+        object->App, 2, MUIM_Application_ReturnID, EVENT_SAVENODE);
 
     DoMethod(object->MI_About, MUIM_Notify, MUIA_Menuitem_Trigger, MUIV_EveryTime, 
         object->App, 2, MUIM_Application_ReturnID, EVENT_ABOUT);

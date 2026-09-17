@@ -125,7 +125,7 @@ typedef enum
     EVENT_ACTIVE,
     EVENT_NODEINFO,
     EVENT_TITLECLICK,
-    EVENT_DUMPALL
+    EVENT_SAVENODE
 
 } ProcessEvent_t;
 
@@ -150,7 +150,8 @@ typedef struct ObjApp
     APTR MI_Quit;
     APTR MI_Expand;
     APTR MI_Collapse;
-    APTR MI_DumpAll;
+    APTR MI_FullNames;
+    APTR MI_SaveNode;
 
     /* Main Window */
 
