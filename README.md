@@ -13,10 +13,10 @@ lowlevel PiStorm/Emu68 developer who needs to see, decode and extract what
 - **Distribution:** [Aminet](http://aminet.net/) — `util/moni`
 
 ## Screenshot
-![Emu68DeviceTree](Emu68DeviceTree.png)
+![Emu68DeviceTree](assets/Emu68DeviceTree.png)
 
 ## Screenshot GIF :
-![Emu68DeviceTree in action](Emu68DeviceTree.gif)
+![Emu68DeviceTree in action](assets/Emu68DeviceTree.gif)
 
 ## Features
 
@@ -110,7 +110,7 @@ parse.
 shows the `SEARCH/K,NODE/K,HELP/S` template first, which is where `HELP`
 comes from.
 
-![Emu68DeviceTree from the Shell: ?, HELP, SEARCH= and NODE=](Emu68DeviceTree-Shell.png)
+![Emu68DeviceTree from the Shell: ?, HELP, SEARCH= and NODE=](assets/Emu68DeviceTree-Shell.png)
 
 ## Credits
 
