@@ -7,7 +7,7 @@
 
 OUTFILE=Emu68DeviceTree
 
-OBJECTS=Emu68DeviceTree.o DeviceTree.o Clipboard.o Utils.o
+OBJECTS=Main.o GUI.o Dump.o DeviceTree.o Clipboard.o Utils.o
 
 all: $(OUTFILE)
 
@@ -15,4 +15,4 @@ clean:
 	@delete $(OBJECTS)
 
 $(OUTFILE): $(OBJECTS)
-	sc MATH=standard LIB:amiga.lib TO $(OUTFILE) LINK $(OBJECTS)
+	sc TO $(OUTFILE) LINK $(OBJECTS)

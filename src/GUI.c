@@ -1,17 +1,13 @@
 /******************************************************************************
- * 
- * Program:  Emu68DeviceTree.c
- * Purpose:  Display the PiStorm/Emu68 Device Tree
- * Authors:  Philippe CARPENTIER
- * Target:   AmigaOS 3.x
- * Compiler: SAS/C 6.59, Strict ANSI C89, NDK 3.2 includes
- * Requires: MUI 3.8, MCC_NList, MCC_NListview, MCC_NListtree, MCC_HexEdit
- * 
+ *
+ * GUI.c
+ *
+ * The MUI application: object tree, menus, hooks and the main event loop.
+ * See GUI.h.
+ *
  ******************************************************************************/
 
 #include <dos/dos.h>
-#include <dos/dosextens.h>
-#include <dos/rdargs.h>
 #include <exec/exec.h>
 #include <intuition/intuition.h>
 #include <libraries/asl.h>
@@ -34,34 +30,20 @@
 #include "Utils.h"
 #include "Clipboard.h"
 #include "DeviceTree.h"
-#include "Emu68DeviceTree.h"
+#include "Main.h"
+#include "Dump.h"
+#include "GUI.h"
+
+extern struct ExecBase * SysBase;
+extern struct DosLibrary * DOSBase;
+extern struct IntuitionBase * IntuitionBase;
+extern struct Library * UtilityBase;
 
 /******************************************************************************
- * 
- * SAS/C
- * 
- ******************************************************************************/
-
-#ifdef __SASC
-  ULONG CXBRK(VOID) { return (0); }
-  ULONG _CXBRK(VOID) { return (0); }
-  VOID  chkabort(VOID) { }
-  LONG  __stack = 32768;
-#endif
-
-/******************************************************************************
- * 
+ *
  * PROTOTYPES
- * 
+ *
  ******************************************************************************/
-
-STATIC BOOL OpenDeviceTree(VOID);
-BOOL OpenLibs(VOID);
-VOID CloseLibs(VOID);
-
-ObjApp_t * CreateApp(VOID);
-VOID DisposeApp(ObjApp_t * object);
-VOID ProcessEvents(VOID);
 
 /* Tree building and sorting */
 
@@ -69,9 +51,6 @@ STATIC LONG  CompareProperties(of_property_t * prop1, of_property_t * prop2);
 STATIC LONG  CompareNodes(of_node_t * node1, of_node_t * node2);
 STATIC VOID  SortProperties(of_property_t ** array, ULONG count);
 STATIC VOID  SortNodes(of_node_t ** array, ULONG count);
-STATIC BOOL  PropertyMatchesFilter(const of_property_t * prop);
-STATIC BOOL  SubtreeMatchesFilter(const of_node_t * node);
-STATIC BOOL  NodeMatchesFilter(const of_node_t * node);
 STATIC VOID  InsertProperty(APTR tree, of_property_t * prop, struct MUI_NListtree_TreeNode * parent);
 STATIC VOID  InsertProperties(APTR tree, of_property_t * prop, struct MUI_NListtree_TreeNode * parent);
 STATIC VOID  InsertNode(APTR tree, of_node_t * node, struct MUI_NListtree_TreeNode * parent);
@@ -111,25 +90,14 @@ STATIC VOID  DoSearch(ObjApp_t * object);
 STATIC VOID  DoToggleSearch(ObjApp_t * object);
 STATIC VOID  DoSave(ObjApp_t * object);
 STATIC VOID  DoSaveNode(ObjApp_t * object);
-STATIC BOOL  ResolvePath(const of_node_t * root, CONST_STRPTR path,
-                 const of_node_t ** outNode, const of_property_t ** outProp);
-STATIC BOOL  DoExport(CONST_STRPTR nodePath, CONST_STRPTR search);
-STATIC VOID  DoHelp(VOID);
-STATIC ULONG RunGUI(VOID);
-STATIC VOID  DumpValue(struct Writer * writer, const of_property_t * prop);
-STATIC VOID  DumpIndent(struct Writer * writer, ULONG depth);
-STATIC VOID  DumpNodePath(struct Writer * writer, const of_node_t * node);
-STATIC VOID  DumpOneProperty(struct Writer * writer, const of_node_t * owner,
-                 const of_property_t * prop, ULONG depth);
-STATIC VOID  DumpProperties(struct Writer * writer, const of_node_t * owner,
-                 const of_property_t * prop, ULONG depth);
-STATIC VOID  DumpOneNode(struct Writer * writer, const of_node_t * node, ULONG depth);
-STATIC VOID  DumpNode(struct Writer * writer, const of_node_t * node, ULONG depth);
+STATIC VOID  DoInspect(VOID);
+STATIC VOID  DoCopyCell(VOID);
+STATIC VOID  DoTitleClick(VOID);
 
 /******************************************************************************
- * 
+ *
  * HOOKS
- * 
+ *
  ******************************************************************************/
 
 STATIC SAVEDS ASM ULONG DisplayFunc(
@@ -148,27 +116,15 @@ STATIC SAVEDS ASM ULONG HexDispatcher(
     REG(a1) Msg msg);
 
 /******************************************************************************
- * 
- * EXTERNS
- * 
- ******************************************************************************/
-
-/* NDK */
-extern struct ExecBase * SysBase;
-extern struct DosLibrary * DOSBase;
-extern struct IntuitionBase * IntuitionBase;
-extern struct Library * UtilityBase;
-
-/******************************************************************************
- * 
+ *
  * GLOBALS
- * 
+ *
  ******************************************************************************/
 
-struct DeviceTreeBase * DTBase = NULL;
-struct Library * MUIMasterBase = NULL;
+/* Not STATIC: proto/muimaster.h itself declares "extern struct Library *
+   MUIMasterBase" by this exact name, for MUI's own auto-open machinery */
 
-ObjApp_t * appMain = NULL;
+struct Library * MUIMasterBase = NULL;
 
 STATIC struct MUI_CustomClass * HexClass = NULL;
 STATIC struct Hook DisplayHook;
@@ -189,7 +145,6 @@ STATIC of_property_t * shownProp = NULL;
 STATIC CONST_STRPTR inspectBytes = NULL;
 
 STATIC UBYTE inspectBuffer[INSPECT_ROWS][INSPECT_CELL_SIZE];
-
 
 /* Byte order and base the inspector reads with, following the two cycle
    gadgets below its list */
@@ -255,18 +210,6 @@ STATIC UBYTE infoLengthBuffer[32];
 STATIC ULONG sortColumn  = SORT_BY_NAME;
 STATIC BOOL  sortReverse = FALSE;
 
-/* Whether a Dump writes each node's own name or its full path (MI_FullNames'
-   checked state, read into this at the start of DoSaveNode()) */
-
-STATIC BOOL  dumpFullNames = TRUE;
-
-/* The tree filter, applied both while the tree is being built and while
-   DoSaveNode() dumps it: empty shows/exports everything, otherwise only
-   entries matching this (case insensitive, substring) and their
-   ancestors, so a match stays reachable in context */
-
-STATIC UBYTE searchFilter[128] = "";
-
 /* Column names, indexed by SORT_BY_#? */
 
 STATIC CONST_STRPTR columnNames[SORT_COLUMN_COUNT] =
@@ -276,10 +219,16 @@ STATIC CONST_STRPTR columnNames[SORT_COLUMN_COUNT] =
     (CONST_STRPTR)"Length"
 };
 
+/* The drawer last confirmed in the ASL save requester, shared between
+   DoSave() and DoSaveNode(): a folder picked for one is offered again for
+   the other */
+
+STATIC UBYTE exportDrawer[MAX_PATHNAME] = "RAM:";
+
 /******************************************************************************
- * 
+ *
  * DoAbout()
- * 
+ *
  ******************************************************************************/
 
 STATIC VOID DoAbout(VOID)
@@ -292,9 +241,9 @@ STATIC VOID DoAbout(VOID)
 }
 
 /******************************************************************************
- * 
+ *
  * DoAboutMUI()
- * 
+ *
  ******************************************************************************/
 
 STATIC VOID DoAboutMUI(VOID)
@@ -526,7 +475,7 @@ STATIC LONG CompareNodes(of_node_t * node1, of_node_t * node2)
             result = (count1 < count2) ? -1 : 1;
         }
     }
-    
+
     if (result == 0)
     {
         result = StringCompare((CONST_STRPTR)node1->on_name,
@@ -598,82 +547,6 @@ STATIC VOID SortNodes(of_node_t ** array, ULONG count)
 
 /******************************************************************************
  *
- * PropertyMatchesFilter()
- *
- ******************************************************************************/
-
-STATIC BOOL PropertyMatchesFilter(const of_property_t * prop)
-{
-    if (searchFilter[0] == '\0')
-    {
-        return (TRUE);
-    }
-
-    return (StringContains((CONST_STRPTR)prop->op_name, (CONST_STRPTR)searchFilter));
-}
-
-/******************************************************************************
- *
- * SubtreeMatchesFilter()
- *
- * Whether 'node' itself, one of its properties, or anything under one of
- * its children matches searchFilter. Only meant to be called when a filter
- * is actually set: see NodeMatchesFilter().
- *
- ******************************************************************************/
-
-STATIC BOOL SubtreeMatchesFilter(const of_node_t * node)
-{
-    const of_property_t * prop;
-    const of_node_t * child;
-
-    if (StringContains((CONST_STRPTR)node->on_name, (CONST_STRPTR)searchFilter))
-    {
-        return (TRUE);
-    }
-
-    for (prop = node->on_properties; prop != NULL; prop = prop->op_next)
-    {
-        if (StringContains((CONST_STRPTR)prop->op_name, (CONST_STRPTR)searchFilter))
-        {
-            return (TRUE);
-        }
-    }
-
-    for (child = node->on_children; child != NULL; child = child->on_next)
-    {
-        if (SubtreeMatchesFilter(child))
-        {
-            return (TRUE);
-        }
-    }
-
-    return (FALSE);
-}
-
-/******************************************************************************
- *
- * NodeMatchesFilter()
- *
- * Whether 'node' belongs in a filtered tree: either there is no filter, or
- * 'node' is on the way to a match somewhere in its own subtree. Applied at
- * every level by InsertNodes(), this alone is what keeps a match's parents
- * in view while everything else is pruned away.
- *
- ******************************************************************************/
-
-STATIC BOOL NodeMatchesFilter(const of_node_t * node)
-{
-    if (searchFilter[0] == '\0')
-    {
-        return (TRUE);
-    }
-
-    return (SubtreeMatchesFilter(node));
-}
-
-/******************************************************************************
- *
  * InsertProperty()
  *
  ******************************************************************************/
@@ -696,7 +569,7 @@ STATIC VOID InsertProperty(
 /******************************************************************************
  *
  * InsertProperties()
- * 
+ *
  ******************************************************************************/
 
 STATIC VOID InsertProperties(
@@ -759,7 +632,7 @@ STATIC VOID InsertProperties(
 /******************************************************************************
  *
  * InsertNode()
- * 
+ *
  ******************************************************************************/
 
 STATIC VOID InsertNode(
@@ -795,7 +668,7 @@ STATIC VOID InsertNode(
 /******************************************************************************
  *
  * InsertNodes()
- * 
+ *
  ******************************************************************************/
 
 STATIC VOID InsertNodes(
@@ -860,7 +733,7 @@ STATIC VOID InsertNodes(
 /******************************************************************************
  *
  * BuildTree()
- * 
+ *
  ******************************************************************************/
 
 STATIC ULONG BuildTree(ObjApp_t * object, struct DeviceTreeBase * base)
@@ -890,17 +763,15 @@ STATIC ULONG BuildTree(ObjApp_t * object, struct DeviceTreeBase * base)
 }
 
 /******************************************************************************
- * 
+ *
  * BuildPath()
- * 
+ *
  ******************************************************************************/
-
-#define MAX_TREE_DEPTH 64
 
 STATIC VOID BuildPath(
     ObjApp_t * object,
-    struct MUI_NListtree_TreeNode * tn, 
-    STRPTR buffer, 
+    struct MUI_NListtree_TreeNode * tn,
+    STRPTR buffer,
     LONG size)
 {
     struct MUI_NListtree_TreeNode * stack[MAX_TREE_DEPTH];
@@ -955,9 +826,9 @@ STATIC VOID BuildPath(
 }
 
 /******************************************************************************
- * 
+ *
  * SetMainTitle()
- * 
+ *
  ******************************************************************************/
 
 STATIC VOID SetMainTitle(ObjApp_t * object, ULONG count)
@@ -973,7 +844,7 @@ STATIC VOID SetMainTitle(ObjApp_t * object, ULONG count)
 /******************************************************************************
  *
  * UseTypeImages()
- * 
+ *
  ******************************************************************************/
 
 STATIC VOID UseTypeImages(ObjApp_t * object)
@@ -1003,7 +874,7 @@ STATIC VOID UseTypeImages(ObjApp_t * object)
 /******************************************************************************
  *
  * UpdateTitleMark()
- * 
+ *
  ******************************************************************************/
 
 STATIC VOID UpdateTitleMark(ObjApp_t * object)
@@ -1015,7 +886,7 @@ STATIC VOID UpdateTitleMark(ObjApp_t * object)
 /******************************************************************************
  *
  * SetSortColumn()
- * 
+ *
  ******************************************************************************/
 
 STATIC VOID SetSortColumn(ObjApp_t * object, ULONG column, BOOL toggle)
@@ -1046,7 +917,7 @@ STATIC VOID SetSortColumn(ObjApp_t * object, ULONG column, BOOL toggle)
 /******************************************************************************
  *
  * SetSortReverse()
- * 
+ *
  ******************************************************************************/
 
 STATIC VOID SetSortReverse(ObjApp_t * object, BOOL reverse)
@@ -1065,9 +936,9 @@ STATIC VOID SetSortReverse(ObjApp_t * object, BOOL reverse)
 /******************************************************************************
  *
  * HexDispatcher()
- * 
+ *
  * A HexEdit subclass which never writes anything (read-only).
- * 
+ *
  ******************************************************************************/
 
 STATIC SAVEDS ASM ULONG HexDispatcher(
@@ -1084,9 +955,9 @@ STATIC SAVEDS ASM ULONG HexDispatcher(
 }
 
 /******************************************************************************
- * 
+ *
  * MakeHexEdit()
- * 
+ *
  ******************************************************************************/
 
 STATIC APTR MakeHexEdit(CONST_STRPTR bytes, ULONG length)
@@ -1111,9 +982,9 @@ STATIC APTR MakeHexEdit(CONST_STRPTR bytes, ULONG length)
 }
 
 /******************************************************************************
- * 
+ *
  * MakePlaceholder()
- * 
+ *
  ******************************************************************************/
 
 STATIC APTR MakePlaceholder(CONST_STRPTR text)
@@ -1132,19 +1003,19 @@ STATIC APTR MakePlaceholder(CONST_STRPTR text)
 /******************************************************************************
  *
  * ShowHexDump()
- * 
+ *
  * Replace the contents of the dump group with a HexEdit object, plus its
  * scrollbar, built for the given property.
- * 
+ *
  * Members of a group may only be added or removed between
  * MUIM_Group_InitChange and MUIM_Group_ExitChange, and an object must be
  * removed from its group before being disposed. The scrollbar is created and
  * disposed together with the HexEdit object it is attached to, so the class
  * never ends up holding a prop object that no longer exists.
- * 
+ *
  * A node, an empty property, or a missing HexEdit.mcc leave a plain text in
  * place of the dump: the group is never left without a child.
- * 
+ *
  ******************************************************************************/
 
 STATIC VOID ShowHexDump(ObjApp_t * object, of_property_t * prop)
@@ -1229,7 +1100,7 @@ STATIC VOID ShowHexDump(ObjApp_t * object, of_property_t * prop)
     {
         set(object->WI_Info, MUIA_Window_ActiveObject, (IPTR)object->OB_HexDump);
     }
-    
+
     // MUI_Redraw(object->WI_Info, MADF_DRAWUPDATE);
 }
 
@@ -1342,9 +1213,9 @@ STATIC VOID FormatInspect(
 }
 
 /******************************************************************************
- * 
+ *
  * DoCursor()
- * 
+ *
  ******************************************************************************/
 
 STATIC VOID DoCursor(ObjApp_t * object, ULONG where)
@@ -1639,9 +1510,9 @@ STATIC VOID FillNodeInfo(ObjApp_t * object)
 }
 
 /******************************************************************************
- * 
+ *
  * DoActive()
- * 
+ *
  ******************************************************************************/
 
 STATIC VOID DoActive(ObjApp_t * object)
@@ -1657,9 +1528,9 @@ STATIC VOID DoActive(ObjApp_t * object)
 }
 
 /******************************************************************************
- * 
+ *
  * DoNodeInfo()
- * 
+ *
  ******************************************************************************/
 
 STATIC VOID DoNodeInfo(ObjApp_t * object)
@@ -1707,103 +1578,6 @@ STATIC VOID DoNodeInfo(ObjApp_t * object)
  * reports it once.
  *
  ******************************************************************************/
-
-#define HEX_PER_LINE (16)
-
-/******************************************************************************
- *
- * DumpValue()
- *
- * A property's whole value, in full, shaped after its type:
- *
- *   string       the string itself
- *   string list  one string per line, the empty ones skipped
- *   blob         every byte in hexadecimal, sixteen per line
- *   long, quad   the value as the Value column words it
- *
- * Nothing is gathered in a buffer first: the writer is fed piece by piece,
- * so a property of any size costs a few dozen bytes of stack. Callers are
- * expected to have already ruled out an empty property (NULL op_value or a
- * zero op_length), which this never writes anything for on its own.
- *
- ******************************************************************************/
-
-STATIC VOID DumpValue(struct Writer * writer, const of_property_t * prop)
-{
-    UBYTE line[64];
-    CONST_STRPTR bytes = (CONST_STRPTR)prop->op_value;
-    ULONG length = prop->op_length;
-    ULONG i;
-
-    switch (EntryType(prop))
-    {
-    case ENTRY_TYPE_STRING:
-        {
-            BOOL first = TRUE;
-
-            for (i = 0; i < length; )
-            {
-                ULONG start;
-
-                if (bytes[i] == '\0')
-                {
-                    i++; /* separator or padding */
-                    continue;
-                }
-
-                if (!first)
-                {
-                    WriterWrite(writer, (CONST_STRPTR)"\n", 1);
-                }
-
-                start = i;
-
-                while ((i < length) && bytes[i])
-                {
-                    i++;
-                }
-
-                WriterWrite(writer, &bytes[start], (LONG)(i - start));
-
-                first = FALSE;
-            }
-        }
-        break;
-
-    case ENTRY_TYPE_BLOB:
-        {
-            LONG pos = 0;
-
-            for (i = 0; i < length; i++)
-            {
-                SPrintf(&line[pos], (LONG)sizeof(line) - pos,
-                    (CONST_STRPTR)"%02lx ", (ULONG)bytes[i]);
-
-                pos += 3;
-
-                if (((i % HEX_PER_LINE) == (HEX_PER_LINE - 1)) ||
-                    (i == (length - 1)))
-                {
-                    line[pos - 1] = '\n'; /* The blank of the last byte */
-
-                    WriterWrite(writer, (CONST_STRPTR)line, pos);
-
-                    pos = 0;
-                }
-            }
-        }
-        break;
-
-    default:
-
-        /* A number, worded as the tree words it */
-
-        FormatValue(prop, line, (LONG)sizeof(line));
-
-        WriterWrite(writer, (CONST_STRPTR)line, StringLength((CONST_STRPTR)line));
-        break;
-    }
-}
 
 STATIC VOID WriteValue(struct Writer * writer, CONST_STRPTR text)
 {
@@ -1866,14 +1640,14 @@ STATIC VOID DoCopy(ObjApp_t * object, CONST_STRPTR text)
 }
 
 /******************************************************************************
- * 
+ *
  * DoSave()
- * 
+ *
  * Save the value of the displayed property as it lies in memory: the raw
  * bytes of devicetree.resource, from op_value to op_length, and nothing
  * else. The clipboard is what gives a readable rendering of a value; a file
  * is what one wants byte for byte, to feed a disassembler or a dtc.
- * 
+ *
  * A node has no value of its own, so there is nothing to save for one.
  *
  * The drawer it was last confirmed with is remembered in exportDrawer,
@@ -1882,8 +1656,6 @@ STATIC VOID DoCopy(ObjApp_t * object, CONST_STRPTR text)
  * ".raw", to tell these raw byte dumps apart from DoSaveNode()'s ".txt".
  *
  ******************************************************************************/
-
-STATIC UBYTE exportDrawer[MAX_PATHNAME] = "RAM:";
 
 STATIC VOID DoSave(ObjApp_t * object)
 {
@@ -1946,197 +1718,6 @@ STATIC VOID DoSave(ObjApp_t * object)
         MUI_Request(object->App, object->WI_Info, 0,
             (STRPTR)APP_NAME, (STRPTR)"*_Ok",
             (STRPTR)"The bytes could not be written to that file.");
-    }
-}
-
-/******************************************************************************
- *
- * DumpIndent()
- *
- ******************************************************************************/
-
-#define DUMP_INDENT "    "
-
-STATIC VOID DumpIndent(struct Writer * writer, ULONG depth)
-{
-    while (depth-- > 0)
-    {
-        WriterWrite(writer, (CONST_STRPTR)DUMP_INDENT,
-            (LONG)StringLength((CONST_STRPTR)DUMP_INDENT));
-    }
-}
-
-/******************************************************************************
- *
- * DumpOneProperty()
- *
- * One line: name, type and the same value a glance at the tree already
- * shows. Never follows op_next, so it dumps this property alone.
- *
- * Indented under 'owner' the plain way, or, when dumpFullNames is set, not
- * indented at all and prefixed with owner's own full path instead ("/chosen/
- * stdout-path: ...") -- every line then stands on its own for a grep, tree
- * structure and all.
- *
- ******************************************************************************/
-
-STATIC VOID DumpOneProperty(struct Writer * writer, const of_node_t * owner,
-    const of_property_t * prop, ULONG depth)
-{
-    UBYTE type[32];
-    ULONG entryType = EntryType(prop);
-    BOOL hasValue = (prop->op_value != NULL) && (prop->op_length > 0);
-
-    if (dumpFullNames)
-    {
-        DumpNodePath(writer, owner);
-        WriterWrite(writer, (CONST_STRPTR)"/", 1);
-    }
-    else
-    {
-        DumpIndent(writer, depth);
-    }
-
-    FormatType(prop, type, sizeof(type));
-
-    WriterWrite(writer, (CONST_STRPTR)prop->op_name,
-        StringLength((CONST_STRPTR)prop->op_name));
-    WriterWrite(writer, (CONST_STRPTR)": ", 2);
-    WriterWrite(writer, (CONST_STRPTR)type, StringLength((CONST_STRPTR)type));
-    WriterWrite(writer, (CONST_STRPTR)" = ", 3);
-
-    if (!hasValue)
-    {
-        WriterWrite(writer, (CONST_STRPTR)"-\n", 2);
-        return;
-    }
-
-    DumpValue(writer, prop);
-
-    /* DumpValue() already ends a blob's last hex line with its own '\n' */
-
-    if (entryType != ENTRY_TYPE_BLOB)
-    {
-        WriterWrite(writer, (CONST_STRPTR)"\n", 1);
-    }
-}
-
-/******************************************************************************
- *
- * DumpProperties()
- *
- * A node's properties, one line each, in the order devicetree.resource
- * holds them (unsorted). Subject to the same searchFilter as the tree
- * view, via PropertyMatchesFilter(): an active search narrows an export
- * down to what it would show on screen.
- *
- ******************************************************************************/
-
-STATIC VOID DumpProperties(struct Writer * writer, const of_node_t * owner,
-    const of_property_t * prop, ULONG depth)
-{
-    for (; prop != NULL; prop = prop->op_next)
-    {
-        if (PropertyMatchesFilter(prop))
-        {
-            DumpOneProperty(writer, owner, prop, depth);
-        }
-    }
-}
-
-/******************************************************************************
- *
- * DumpNodePath()
- *
- * A node's full path, walking on_parent up to the root, then writing each
- * name from there back down ("/chosen", "/regulator-cam1", ...). Nothing at
- * all for the root itself, whose on_name is empty: DumpOneNode's own "/\n"
- * is enough for that line.
- *
- ******************************************************************************/
-
-STATIC VOID DumpNodePath(struct Writer * writer, const of_node_t * node)
-{
-    const of_node_t * stack[MAX_TREE_DEPTH];
-    LONG depth = 0;
-
-    while ((node != NULL) && (depth < MAX_TREE_DEPTH))
-    {
-        stack[depth++] = node;
-        node = node->on_parent;
-    }
-
-    while (depth-- > 0)
-    {
-        CONST_STRPTR name = (CONST_STRPTR)stack[depth]->on_name;
-
-        if ((name == NULL) || (name[0] == '\0'))
-        {
-            continue;
-        }
-
-        WriterWrite(writer, (CONST_STRPTR)"/", 1);
-        WriterWrite(writer, name, StringLength(name));
-    }
-}
-
-/******************************************************************************
- *
- * DumpOneNode()
- *
- * One node, its properties, then its children: the whole subtree under
- * 'node', but never its siblings (on_next is left untouched).
- *
- * The node's own line names it either the plain way ("chosen/"), indented,
- * or, when dumpFullNames is set, by its full path ("/chosen/") with no
- * indentation at all -- every line then stands on its own for a grep, tree
- * structure and all.
- *
- ******************************************************************************/
-
-STATIC VOID DumpOneNode(struct Writer * writer, const of_node_t * node, ULONG depth)
-{
-    if (dumpFullNames)
-    {
-        DumpNodePath(writer, node);
-    }
-    else
-    {
-        CONST_STRPTR name = (CONST_STRPTR)node->on_name;
-
-        DumpIndent(writer, depth);
-
-        if ((name != NULL) && (name[0] != '\0'))
-        {
-            WriterWrite(writer, name, StringLength(name));
-        }
-    }
-
-    WriterWrite(writer, (CONST_STRPTR)"/\n", 2);
-
-    DumpProperties(writer, node, node->on_properties, depth + 1);
-    DumpNode(writer, node->on_children, depth + 1);
-}
-
-/******************************************************************************
- *
- * DumpNode()
- *
- * One node, its properties, then its children: the whole tree from 'node'
- * down, in the order devicetree.resource holds it (unsorted). Subject to
- * the same searchFilter as the tree view, via NodeMatchesFilter(): a
- * sibling is skipped unless it, or something under it, matches.
- *
- ******************************************************************************/
-
-STATIC VOID DumpNode(struct Writer * writer, const of_node_t * node, ULONG depth)
-{
-    for (; node != NULL; node = node->on_next)
-    {
-        if (NodeMatchesFilter(node))
-        {
-            DumpOneNode(writer, node, depth);
-        }
     }
 }
 
@@ -2251,187 +1832,11 @@ STATIC VOID DoSaveNode(ObjApp_t * object)
 
 /******************************************************************************
  *
- * ResolvePath()
- *
- * The node or property at 'path' ("/soc/watchdog@7e100000/phandle", leading/
- * trailing slashes and repeats of them ignored), walking on_children one
- * name at a time, case insensitive. The last segment may name a property
- * instead of a child node, in which case '*outNode' is left holding its
- * parent and '*outProp' the property itself; otherwise '*outNode' is the
- * resolved node and '*outProp' is NULL. '*outNode' is 'root' and '*outProp'
- * is NULL for an empty path. Returns FALSE if any segment along the way
- * matches neither a child node nor, as the last segment, a property.
- *
- ******************************************************************************/
-
-STATIC BOOL ResolvePath(const of_node_t * root, CONST_STRPTR path,
-    const of_node_t ** outNode, const of_property_t ** outProp)
-{
-    const of_node_t * node = root;
-
-    *outNode = root;
-    *outProp = NULL;
-
-    if (path == NULL)
-    {
-        return (TRUE);
-    }
-
-    while (*path == '/')
-    {
-        path++;
-    }
-
-    while (*path != '\0')
-    {
-        UBYTE segment[128];
-        LONG len = 0;
-        const of_node_t * child;
-        CONST_STRPTR rest;
-
-        while ((path[len] != '\0') && (path[len] != '/'))
-        {
-            len++;
-        }
-
-        if (len >= (LONG)sizeof(segment))
-        {
-            len = (LONG)sizeof(segment) - 1;
-        }
-
-        CopyMem((APTR)path, (APTR)segment, (ULONG)len);
-        segment[len] = '\0';
-
-        rest = path + len;
-
-        while (*rest == '/')
-        {
-            rest++;
-        }
-
-        for (child = node->on_children; child != NULL; child = child->on_next)
-        {
-            CONST_STRPTR name = (CONST_STRPTR)child->on_name;
-
-            if ((name != NULL) && (Stricmp(name, (CONST_STRPTR)segment) == 0))
-            {
-                break;
-            }
-        }
-
-        if (child != NULL)
-        {
-            node  = child;
-            path  = rest;
-            *outNode = node;
-            continue;
-        }
-
-        /* Not a child node: only a property of 'node' can still match, and
-           only as the very last segment of the path */
-
-        if (*rest == '\0')
-        {
-            const of_property_t * prop;
-
-            for (prop = node->on_properties; prop != NULL; prop = prop->op_next)
-            {
-                CONST_STRPTR name = (CONST_STRPTR)prop->op_name;
-
-                if ((name != NULL) && (Stricmp(name, (CONST_STRPTR)segment) == 0))
-                {
-                    *outProp = prop; /* *outNode is already its parent */
-                    return (TRUE);
-                }
-            }
-        }
-
-        return (FALSE);
-    }
-
-    return (TRUE);
-}
-
-/******************************************************************************
- *
- * DoExport()
- *
- * The headless counterpart to DoSaveNode(): straight from the Shell command
- * line (see main()), write to standard output and quit, no window ever
- * opened -- so the result can be read directly or redirected to a file,
- * e.g. "Emu68DeviceTree SEARCH=watchdog >RAM:watchdog.txt".
- *
- * With 'nodePath' (NODE=), that single node (or property) and everything
- * below it, in full, exactly like selecting it in the tree and using *Save
- * node as...*. With 'search' (SEARCH=) instead, the whole tree filtered
- * exactly as the search gadget would: matching entries and their ancestors.
- * A typical remote session runs SEARCH first to find the interesting node's
- * path, then NODE to pull that node whole. Always with full names, since a
- * path to nowhere on screen is the only context a plain text stream can
- * offer. NODE wins if somehow both are given.
- *
- ******************************************************************************/
-
-STATIC BOOL DoExport(CONST_STRPTR nodePath, CONST_STRPTR search)
-{
-    struct Writer writer;
-    BOOL ok = FALSE;
-
-    dumpFullNames   = TRUE;
-    searchFilter[0] = '\0';
-
-    if ((nodePath != NULL) && (nodePath[0] != '\0'))
-    {
-        const of_node_t * node = NULL;
-        const of_property_t * prop = NULL;
-
-        if (!ResolvePath(DTBase->dt_Root, nodePath, &node, &prop))
-        {
-            PutStr("No such node or property.\n");
-            return (FALSE);
-        }
-
-        if (WriterOpenOutput(&writer))
-        {
-            if (prop != NULL)
-            {
-                DumpOneProperty(&writer, node, prop, 0);
-            }
-            else
-            {
-                DumpOneNode(&writer, node, 0);
-            }
-
-            ok = WriterClose(&writer);
-        }
-    }
-    else
-    {
-        StringCopy(searchFilter, search, (LONG)sizeof(searchFilter));
-
-        if (WriterOpenOutput(&writer))
-        {
-            DumpNode(&writer, DTBase->dt_Root, 0);
-
-            ok = WriterClose(&writer);
-        }
-    }
-
-    if (!ok)
-    {
-        PutStr("The device tree could not be written to standard output.\n");
-    }
-
-    return (ok);
-}
-
-/******************************************************************************
- *
  * DoInspect()
  *
  ******************************************************************************/
 
-VOID DoInspect(VOID)
+STATIC VOID DoInspect(VOID)
 {
     ULONG value = 0;
 
@@ -2450,7 +1855,7 @@ VOID DoInspect(VOID)
  *
  ******************************************************************************/
 
-VOID DoCopyCell(VOID)
+STATIC VOID DoCopyCell(VOID)
 {
     struct MUI_NListtree_TreeNode * tn = NULL;
 
@@ -2476,7 +1881,7 @@ VOID DoCopyCell(VOID)
  *
  ******************************************************************************/
 
-VOID DoTitleClick(VOID)
+STATIC VOID DoTitleClick(VOID)
 {
     LONG column = -1;
 
@@ -2497,13 +1902,13 @@ VOID DoTitleClick(VOID)
 VOID ProcessEvents(VOID)
 {
     BOOL running = TRUE;
-    
+
     while (running)
     {
         ULONG signals;
-        
+
         ULONG id = DoMethod(appMain->App, MUIM_Application_Input, &signals);
-        
+
         switch (id)
         {
         case EVENT_RELOAD:
@@ -2590,7 +1995,7 @@ VOID ProcessEvents(VOID)
             running = FALSE;
             break;
         }
-        
+
         if (running)
         {
             UpdateInspector(appMain);
@@ -2602,12 +2007,12 @@ VOID ProcessEvents(VOID)
                 SIGBREAKF_CTRL_C |
                 SIGBREAKF_CTRL_E |
                 SIGBREAKF_CTRL_F);
-            
+
             if (signals & SIGBREAKF_CTRL_C)
             {
                 break;
             }
-            
+
             if ((signals & SIGBREAKF_CTRL_E) ||
                 (signals & SIGBREAKF_CTRL_F))
             {
@@ -2672,7 +2077,7 @@ ObjApp_t * CreateApp(VOID)
     APTR GROUP_INFO;
 
     /* Allocate App */
-    
+
     if (!(object = AllocVec(sizeof(ObjApp_t), MEMF_PUBLIC | MEMF_CLEAR)))
     {
         return (NULL);
@@ -2689,7 +2094,7 @@ ObjApp_t * CreateApp(VOID)
     InspectHook.h_Data     = NULL;
 
     /* MUI MenuStrips */
-    
+
     object->MN_Main = (APTR)MUI_MakeObject(MUIO_MenustripNM, menuData, 0);
 
     if (object->MN_Main == NULL)
@@ -2704,7 +2109,7 @@ ObjApp_t * CreateApp(VOID)
         MUIM_FindUData, EVENT_TOGGLESEARCH);
 
     /* MUI NListview */
-    
+
     object->LV_Tree = NListviewObject,
         MUIA_ShortHelp,       MUIX_B "DeviceTree Explorer" MUIX_N "\nExplore the DeviceTree.resource items",
         MUIA_CycleChain,      TRUE,
@@ -2832,7 +2237,7 @@ ObjApp_t * CreateApp(VOID)
     End;
 
     /* MUI Application */
-    
+
     object->App = ApplicationObject,
         MUIA_Application_Author,      APP_AUTHORS,
         MUIA_Application_Base,        APP_BASE,
@@ -2853,7 +2258,7 @@ ObjApp_t * CreateApp(VOID)
     }
 
     /* MUI Cycle Chain */
-    
+
     set(object->BT_First,     MUIA_CycleChain, 1);
     set(object->BT_Prev,      MUIA_CycleChain, 1);
     set(object->BT_Next,      MUIA_CycleChain, 1);
@@ -2863,8 +2268,8 @@ ObjApp_t * CreateApp(VOID)
     set(object->BT_InfoClose, MUIA_CycleChain, 1);
 
     /* MUI Notify */
-    
-    DoMethod(object->WI_Main, MUIM_Notify, MUIA_Window_CloseRequest, TRUE, 
+
+    DoMethod(object->WI_Main, MUIM_Notify, MUIA_Window_CloseRequest, TRUE,
         object->App, 2, MUIM_Application_ReturnID, MUIV_Application_ReturnID_Quit);
 
     DoMethod(object->TR_Tree, MUIM_Notify, MUIA_NListtree_DoubleClick, MUIV_EveryTime,
@@ -2882,7 +2287,7 @@ ObjApp_t * CreateApp(VOID)
     DoMethod(object->CY_Base, MUIM_Notify, MUIA_Cycle_Active, MUIV_EveryTime,
         object->App, 2, MUIM_Application_ReturnID, EVENT_INSPECT);
 
-    DoMethod(object->WI_Info, MUIM_Notify, MUIA_Window_CloseRequest, TRUE, 
+    DoMethod(object->WI_Info, MUIM_Notify, MUIA_Window_CloseRequest, TRUE,
         object->WI_Info, 3, MUIM_Set, MUIA_Window_Open, FALSE);
 
     DoMethod(object->BT_InfoCopy, MUIM_Notify, MUIA_Pressed, FALSE,
@@ -2891,7 +2296,7 @@ ObjApp_t * CreateApp(VOID)
     DoMethod(object->BT_InfoSave, MUIM_Notify, MUIA_Pressed, FALSE,
         object->App, 2, MUIM_Application_ReturnID, EVENT_SAVE);
 
-    DoMethod(object->BT_InfoClose, MUIM_Notify, MUIA_Pressed, FALSE, 
+    DoMethod(object->BT_InfoClose, MUIM_Notify, MUIA_Pressed, FALSE,
         object->WI_Info, 3, MUIM_Set, MUIA_Window_Open, FALSE);
 
     DoMethod(object->BT_First, MUIM_Notify, MUIA_Pressed, FALSE,
@@ -2913,10 +2318,11 @@ ObjApp_t * CreateApp(VOID)
         object->App, 2, MUIM_Application_ReturnID, EVENT_SEARCH);
 
     /* Final inits */
-    
+
     UseTypeImages(object);
     FillInspector(object);
     UpdateTitleMark(object);
+    DoReload(object);
     set(object->WI_Main, MUIA_Window_Open, TRUE);
     set(object->WI_Main, MUIA_Window_ActiveObject, (IPTR)object->TR_Tree);
 
@@ -2957,32 +2363,6 @@ VOID DisposeApp(ObjApp_t * object)
 
 /******************************************************************************
  *
- * OpenDeviceTree()
- *
- * Just the resource, nothing MUI: what the headless SEARCH=/NODE= command
- * line mode needs and nothing more (see main()).
- *
- ******************************************************************************/
-
-STATIC BOOL OpenDeviceTree(VOID)
-{
-    if (!(DTBase = (struct DeviceTreeBase *)OpenResource((CONST_STRPTR)DEVICETREE_NAME)))
-    {
-        PutStr("Failed to open " DEVICETREE_NAME ".\n");
-        return (FALSE);
-    }
-
-    if (!DTBase->dt_Root)
-    {
-        PutStr("Failed to open " DEVICETREE_NAME ".\n");
-        return (FALSE);
-    }
-
-    return (TRUE);
-}
-
-/******************************************************************************
- *
  * OpenLibs()
  *
  ******************************************************************************/
@@ -2999,10 +2379,10 @@ BOOL OpenLibs(VOID)
         PutStr("Failed to open " MUIMASTER_NAME ".\n");
         return (FALSE);
     }
-    
+
     HexClass = MUI_CreateCustomClass(NULL, (STRPTR)MUIC_HexEdit, NULL,
         0, (APTR)HexDispatcher);
-    
+
     return (TRUE);
 }
 
@@ -3025,140 +2405,6 @@ VOID CloseLibs(VOID)
         CloseLibrary(MUIMasterBase);
         MUIMasterBase = NULL;
     }
-}
-
-/******************************************************************************
- *
- * ENTRY POINT
- *
- ******************************************************************************/
-
-#define ARGS_TEMPLATE (CONST_STRPTR)"SEARCH/K,NODE/K,HELP/S"
-
-typedef enum { ARG_SEARCH, ARG_NODE, ARG_HELP, ARG_COUNT } Arg_t;
-
-/******************************************************************************
- *
- * DoHelp()
- *
- * What "Emu68DeviceTree ?" leads to: it shows the template above, whoever
- * is reading it types HELP out of curiosity, and lands here. No window, no
- * MUI, same as SEARCH=/NODE=.
- *
- ******************************************************************************/
-
-STATIC VOID DoHelp(VOID)
-{
-    PutStr(APP_VERSTRING "\n" APP_DESCRIPTION ".\n\n");
-    PutStr("Emu68DeviceTree [SEARCH=<text>] [NODE=<path>] [HELP]\n\n");
-    PutStr("From Workbench   Open the usual MUI browser window.\n");
-    PutStr("No argument      Print this text (a Shell never gets a window\n");
-    PutStr("                 it did not ask for).\n");
-    PutStr("SEARCH=<text>    Print the tree filtered to <text> (case insensitive,\n");
-    PutStr("                 substring, with full paths) to standard output, then\n");
-    PutStr("                 quit. No window, no MUI. Ignored if NODE is given.\n");
-    PutStr("NODE=<path>      Print that one node or property, and everything below\n");
-    PutStr("                 it, to standard output, then quit. No window, no MUI.\n");
-    PutStr("HELP             Show this text, then quit.\n\n");
-    PutStr("Examples:\n");
-    PutStr("  Emu68DeviceTree SEARCH=watchdog\n");
-    PutStr("  Emu68DeviceTree NODE=\"/soc/watchdog@7e100000/\" >RAM:watchdog.txt\n");
-}
-
-/******************************************************************************
- *
- * RunGUI()
- *
- * The normal, windowed program: open the libraries, build and run the MUI
- * application, tear it down. Only ever reached from a Workbench launch
- * (see main()): a Shell gets SEARCH=/NODE= or DoHelp() instead, never a
- * window it did not ask for.
- *
- ******************************************************************************/
-
-STATIC ULONG RunGUI(VOID)
-{
-    ULONG result = RETURN_FAIL;
-
-    if (OpenLibs())
-    {
-        result = RETURN_WARN;
-
-        if ((appMain = CreateApp()) != NULL)
-        {
-            DoReload(appMain);
-            ProcessEvents();
-            DisposeApp(appMain);
-            result = RETURN_OK;
-        }
-        else
-        {
-            PutStr("Failed to create MUI application.\n");
-        }
-
-        CloseLibs();
-    }
-
-    return (result);
-}
-
-/******************************************************************************
- *
- * Entry Point
- *
- ******************************************************************************/
-
-ULONG main(VOID)
-{
-    ULONG result;
-    LONG args[ARG_COUNT];
-    struct RDArgs * rdArgs;
-    struct Process * process = (struct Process *)SysBase->ThisTask;
-
-    if (process->pr_CLI == 0)
-    {
-        /* No CommandLineInterface attached to this process: started from
-           Workbench (icon double-click), not a Shell. The GUI is
-           Workbench-only; a Shell gets SEARCH=/NODE= or, failing that, the
-           same help a plain HELP would give (see below) -- never a window
-           it did not ask for. */
-
-        return (RunGUI());
-    }
-
-    args[ARG_SEARCH] = 0;
-    args[ARG_NODE]   = 0;
-    args[ARG_HELP]   = FALSE;
-
-    if (!(rdArgs = ReadArgs(ARGS_TEMPLATE, args, NULL)))
-    {
-        PrintFault(IoErr(), (CONST_STRPTR)APP_NAME);
-        return (RETURN_FAIL);
-    }
-
-    if ((args[ARG_SEARCH] != 0) || (args[ARG_NODE] != 0))
-    {
-        result = RETURN_FAIL;
-
-        if (OpenDeviceTree())
-        {
-            result = DoExport((CONST_STRPTR)args[ARG_NODE],
-                (CONST_STRPTR)args[ARG_SEARCH]) ? RETURN_OK : RETURN_WARN;
-        }
-    }
-    else
-    {
-        /* HELP, or nothing at all: either way, print the same usage text
-           rather than opening a window from a Shell that did not ask for
-           one. */
-
-        DoHelp();
-        result = RETURN_OK;
-    }
-
-    FreeArgs(rdArgs);
-
-    return (result);
 }
 
 /******************************************************************************

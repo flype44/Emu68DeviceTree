@@ -1,6 +1,6 @@
 /******************************************************************************
  *
- * Emu68DeviceTree.h
+ * Main.h
  *
  ******************************************************************************/
 
@@ -83,6 +83,11 @@
 #define SORT_COLUMN_COUNT   (3)
 
 #define TREE_FORMAT         "W=100 BAR,W=0 BAR,W=0"
+
+/* How deep a walk up on_parent (DumpNodePath(), in Dump.c) or up the
+   NListtree (BuildPath(), in GUI.c) is ever expected to go */
+
+#define MAX_TREE_DEPTH      (64)
 
 /******************************************************************************
  *
@@ -179,6 +184,26 @@ typedef struct ObjApp
     APTR BT_InfoClose;
 
 } ObjApp_t;
+
+/******************************************************************************
+ *
+ * GLOBALS
+ *
+ * Owned by Emu68DeviceTree.c, read (and, for DTBase, indirectly reached
+ * through) by GUI.c and Dump.c.
+ *
+ ******************************************************************************/
+
+extern struct DeviceTreeBase * DTBase;
+extern ObjApp_t *               appMain;
+
+/******************************************************************************
+ *
+ * PROTOTYPES
+ *
+ ******************************************************************************/
+
+BOOL OpenDeviceTree(VOID);
 
 /******************************************************************************
  *
