@@ -12,8 +12,10 @@ lowlevel PiStorm/Emu68 developer who needs to see, decode and extract what
 - **Architecture:** m68k-amigaos >= 3.0.0
 - **Distribution:** [Aminet](http://aminet.net/) — `util/moni`
 
+## Screenshot
 ![Emu68DeviceTree](Emu68DeviceTree.png)
 
+## Screenshot GIF :
 ![Emu68DeviceTree in action](Emu68DeviceTree.gif)
 
 ## Features
@@ -77,24 +79,7 @@ menu. A command line argument is optional — see *Command line* below.
 
 Run the program from the Shell or from Workbench.
 
-| Action | How |
-| --- | --- |
-| Sort by a column | Click its title; click again to reverse |
-| Expand / collapse the whole tree | `E` / `C`, or the Tree menu |
-| Show / hide the search gadget | `F`, or the Tree menu |
-| Filter the tree | Type in the search gadget, press RETURN; clear + RETURN to reset |
-| Open the information window | Double-click a property |
-| Move the dump cursor | `|<` `<` `>` `>|`, or the keyboard inside the dump |
-| Copy the value | *Copy to clipboard*, or `C` |
-| Copy one inspector cell | Double-click the row |
-| Save the raw bytes | *Save to file*, or `S` |
-| Save a node/property (or the whole tree) as text | *Save node as...*, or `A` |
-| Use full paths in exports | *Use full names*, or `N` |
-| Reload the tree | `L`, or the Project menu |
-| Iconify | `I` |
-| Quit | `Q`, or `Ctrl-C` from the Shell |
-
-`Ctrl-E` and `Ctrl-F` bring the program back from iconified state.
+### Workbench
 
 The **Project** menu holds *Reload...*, *Save node as...*, *Use full names*,
 *About...*, *About MUI...*, *Settings MUI...*, *Iconify* and *Quit*. The
@@ -126,42 +111,6 @@ shows the `SEARCH/K,NODE/K,HELP/S` template first, which is where `HELP`
 comes from.
 
 ![Emu68DeviceTree from the Shell: ?, HELP, SEARCH= and NODE=](Emu68DeviceTree-Shell.png)
-
-## Building
-
-The program is written in **strict ANSI C89** and builds with **SAS/C 6.59** on
-AmigaOS, against the **NDK 3.2** includes and the MUI 3.8 / MCC developer
-includes.
-
-```
-smake
-```
-
-`SCOPTIONS` targets `CPU=68020`, which every PiStorm board satisfies. Set it to
-`CPU=68000` if you want a plain 68000 binary.
-
-`smake clean` deletes the object files.
-
-### Source layout
-
-| File | Contents |
-| --- | --- |
-| `Emu68DeviceTree.c` | Application, MUI interface, hooks and event loop |
-| `Emu68DeviceTree.h` | Application constants, events, object structure |
-| `DeviceTree.c/.h` | `devicetree.resource` structures, typing and formatting |
-| `Clipboard.c/.h` | The writer: IFF clipboard plumbing and plain files |
-| `Utils.c/.h` | Strings, `RawDoFmt()` wrapper, number and date formatting |
-| `SMakefile` | SAS/C makefile |
-| `SCOPTIONS` | SAS/C compiler options |
-
-## Contributing
-
-Issues and pull requests are welcome at
-<https://github.com/flype44/Emu68DeviceTree/>.
-
-Please keep to the existing style: strict C89, SAS/C 6.59 clean, no C++ comments,
-no dependency beyond the NDK, MUI 3.8 and the MCCs listed above, and no OS call
-newer than V36.
 
 ## Credits
 
