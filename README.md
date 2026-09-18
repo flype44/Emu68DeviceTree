@@ -125,6 +125,8 @@ parse.
 shows the `SEARCH/K,NODE/K,HELP/S` template first, which is where `HELP`
 comes from.
 
+![Emu68DeviceTree from the Shell: ?, HELP, SEARCH= and NODE=](Emu68DeviceTree-Shell.png)
+
 ## Building
 
 The program is written in **strict ANSI C89** and builds with **SAS/C 6.59** on

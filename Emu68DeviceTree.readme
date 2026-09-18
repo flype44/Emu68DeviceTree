@@ -2,14 +2,14 @@ Short:        Display the PiStorm/Emu68 Device Tree
 Author:       flype44 (at) gmail
 Uploader:     flype44 (at) gmail
 Type:         util/moni
-Version:      1.0.0-rc1
+Version:      1.0.1
 Architecture: m68k-amigaos >= 3.0.0
 Distribution: Aminet
 Requires:     MUI 3.8, MCC_NList, MCC_NListtree, MCC_HexEdit
 
 
-                      Emu68DeviceTree 1.0.0-rc1
-                      =========================
+                        Emu68DeviceTree 1.0.1
+                        =====================
 
                   Display the PiStorm/Emu68 Device Tree
                     Written by Philippe CARPENTIER
@@ -20,6 +20,11 @@ WHAT IT IS
 
 Emu68DeviceTree is a MUI browser for the Device Tree published by Emu68
 on PiStorm boards. That tool may help the lowlevel PiStorm/Emu68 developers.
+
+Browse the whole tree, search it by name, inspect a property's raw bytes
+and decoded value, and save any node (or the whole tree) to a plain text
+file. A command line mode (SEARCH=, NODE=) skips the GUI entirely and
+writes straight to standard output, for remote sessions and scripting.
 
 
 REQUIREMENTS
@@ -43,9 +48,29 @@ REQUIREMENTS
 INSTALLATION
 ============
 
-Copy Emu68DeviceTree wherever you like. The program needs no assign, no
-configuration file and no argument. Its settings are the MUI ones, reachable
-from the Project menu.
+Copy Emu68DeviceTree wherever you like. The program needs no assign and no
+configuration file. Its settings are the MUI ones, reachable from the
+Project menu. A command line argument is optional, see COMMAND LINE below.
+
+
+COMMAND LINE
+============
+
+Give the program SEARCH= or NODE= and it never opens a window, never even
+touches MUI: it writes to standard output and quits, so the result can be
+read directly or redirected to a file.
+
+  Emu68DeviceTree SEARCH=watchdog
+  Emu68DeviceTree NODE="/soc/watchdog@7e100000/" >RAM:watchdog.txt
+
+SEARCH= filters the tree exactly as the search gadget would (case
+insensitive, with full paths), keeping matches' parents for context.
+NODE= then dumps that one node (or property) whole, in full, exactly like
+selecting it in the tree and using "Save node as...".
+
+HELP prints a short summary of this and quits. Typing "Emu68DeviceTree ?"
+shows the SEARCH/K,NODE/K,HELP/S template first, which is where HELP
+comes from.
 
 
 NOTES
