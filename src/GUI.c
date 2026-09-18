@@ -47,10 +47,11 @@ extern struct Library * UtilityBase;
 
 /* Tree building and sorting */
 
-STATIC LONG  CompareProperties(of_property_t * prop1, of_property_t * prop2);
-STATIC LONG  CompareNodes(of_node_t * node1, of_node_t * node2);
-STATIC VOID  SortProperties(of_property_t ** array, ULONG count);
-STATIC VOID  SortNodes(of_node_t ** array, ULONG count);
+typedef LONG (*CompareFunc_t)(APTR item1, APTR item2);
+
+STATIC VOID  InsertionSort(APTR * array, ULONG count, CompareFunc_t compare);
+STATIC LONG  CompareProperties(APTR item1, APTR item2);
+STATIC LONG  CompareNodes(APTR item1, APTR item2);
 STATIC VOID  InsertProperty(APTR tree, of_property_t * prop, struct MUI_NListtree_TreeNode * parent);
 STATIC VOID  InsertProperties(APTR tree, of_property_t * prop, struct MUI_NListtree_TreeNode * parent);
 STATIC VOID  InsertNode(APTR tree, of_node_t * node, struct MUI_NListtree_TreeNode * parent);
@@ -79,6 +80,8 @@ STATIC VOID  WriteValue(struct Writer * writer, CONST_STRPTR text);
 
 /* Events */
 
+STATIC VOID  ReportFailure(ObjApp_t * object, APTR window, CONST_STRPTR text);
+STATIC BOOL  PickSavePath(CONST_STRPTR title, CONST_STRPTR fileName, STRPTR path, LONG size);
 STATIC VOID  DoAbout(VOID);
 STATIC VOID  DoAboutMUI(VOID);
 STATIC VOID  DoActive(ObjApp_t * object);
@@ -227,6 +230,57 @@ STATIC UBYTE exportDrawer[MAX_PATHNAME] = "RAM:";
 
 /******************************************************************************
  *
+ * ReportFailure()
+ *
+ ******************************************************************************/
+
+STATIC VOID ReportFailure(ObjApp_t * object, APTR window, CONST_STRPTR text)
+{
+    MUI_Request(object->App, window, 0, (STRPTR)APP_NAME, (STRPTR)"*_Ok", (STRPTR)text);
+}
+
+/******************************************************************************
+ *
+ * PickSavePath()
+ *
+ * The ASL save requester shared by DoSave()/DoSaveNode(): 'path' is filled
+ * with the confirmed drawer and file name, and exportDrawer is updated so
+ * the next save (whichever of the two) offers the same folder again.
+ *
+ ******************************************************************************/
+
+STATIC BOOL PickSavePath(CONST_STRPTR title, CONST_STRPTR fileName, STRPTR path, LONG size)
+{
+    struct FileRequester * request;
+    BOOL confirmed = FALSE;
+
+    request = (struct FileRequester *)MUI_AllocAslRequestTags(ASL_FileRequest,
+        ASLFR_TitleText,     (IPTR)title,
+        ASLFR_DoSaveMode,    TRUE,
+        ASLFR_InitialDrawer, (IPTR)exportDrawer,
+        ASLFR_InitialFile,   (IPTR)fileName,
+        TAG_DONE);
+
+    if (request == NULL)
+    {
+        return (FALSE);
+    }
+
+    if (MUI_AslRequestTags(request, TAG_DONE))
+    {
+        StringCopy(exportDrawer, (CONST_STRPTR)request->fr_Drawer, (LONG)sizeof(exportDrawer));
+        StringCopy(path, (CONST_STRPTR)request->fr_Drawer, size);
+
+        confirmed = AddPart(path, (CONST_STRPTR)request->fr_File, size) ? TRUE : FALSE;
+    }
+
+    MUI_FreeAslRequest(request);
+
+    return (confirmed);
+}
+
+/******************************************************************************
+ *
  * DoAbout()
  *
  ******************************************************************************/
@@ -255,9 +309,7 @@ STATIC VOID DoAboutMUI(VOID)
  *
  * DoReload()
  *
- * Resets any active search before rebuilding, as if the user had cleared
- * the search gadget and pressed RETURN: a reload always shows the whole
- * tree again.
+ * Clears any active search first: a reload always shows the whole tree.
  *
  ******************************************************************************/
 
@@ -273,10 +325,6 @@ STATIC VOID DoReload(ObjApp_t * object)
 /******************************************************************************
  *
  * DoSearch()
- *
- * Filter the tree to what searchFilter now holds (the search gadget's
- * contents when RETURN was pressed): matching nodes and properties, their
- * parents, and nothing else. An empty search shows everything again.
  *
  ******************************************************************************/
 
@@ -295,19 +343,10 @@ STATIC VOID DoSearch(ObjApp_t * object)
  *
  * DoToggleSearch()
  *
- * Show or hide the search gadget after MI_ShowSearch's checkmark, and hand
- * the keyboard to whichever of it or the tree makes sense now: the search
- * gadget when it just appeared, the tree when it just went away (typing
- * into a gadget nobody can see would be worse than pointless).
- *
- * GR_Search (the group wrapping the string gadget) is actually removed from
- * and re-added to GR_Main, rather than just having MUIA_ShowMe toggled on
- * it: a plain ShowMe left the cycle-chain focus border of whichever gadget
- * had the keyboard behind as a stray artifact (a known rough edge, not
- * specific to this app). OM_REMMEMBER/OM_ADDMEMBER inside InitChange/
- * ExitChange is the same technique ShowHexDump() already uses in this file
- * for the hex dump view, and it never has this problem: MUI fully forgets
- * and redraws that part of the layout instead of merely hiding it in place.
+ * GR_Search is removed from/re-added to GR_Main rather than toggling
+ * MUIA_ShowMe on it: a plain ShowMe left a stray focus border behind (a
+ * known MUI rough edge). OM_REMMEMBER/OM_ADDMEMBER under InitChange/
+ * ExitChange forces a full redraw instead, same as ShowHexDump() below.
  *
  ******************************************************************************/
 
@@ -349,8 +388,8 @@ STATIC SAVEDS ASM ULONG DisplayFunc(
     STATIC BYTE typeBuffer[24];
     STATIC BYTE lengthBuffer[16];
 
-//    (void)hook;
-//    (void)obj;
+    (void)hook;
+    (void)obj;
 
     if (msg->TreeNode != NULL)
     {
@@ -408,12 +447,46 @@ STATIC SAVEDS ASM ULONG DisplayFunc(
 
 /******************************************************************************
  *
+ * InsertionSort()
+ *
+ * Stable, small-N sort shared by the property and node arrays below.
+ *
+ ******************************************************************************/
+
+STATIC VOID InsertionSort(APTR * array, ULONG count, CompareFunc_t compare)
+{
+    APTR temp;
+    ULONG i;
+    LONG j;
+
+    for (i = 1; i < count; i++)
+    {
+        temp = array[i];
+
+        for (j = (LONG)i - 1; j >= 0; j--)
+        {
+            if (compare(array[j], temp) <= 0)
+            {
+                break;
+            }
+
+            array[j + 1] = array[j];
+        }
+
+        array[j + 1] = temp;
+    }
+}
+
+/******************************************************************************
+ *
  * CompareProperties()
  *
  ******************************************************************************/
 
-STATIC LONG CompareProperties(of_property_t * prop1, of_property_t * prop2)
+STATIC LONG CompareProperties(APTR item1, APTR item2)
 {
+    of_property_t * prop1 = (of_property_t *)item1;
+    of_property_t * prop2 = (of_property_t *)item2;
     LONG result = 0;
 
     switch (sortColumn)
@@ -461,8 +534,10 @@ STATIC LONG CompareProperties(of_property_t * prop1, of_property_t * prop2)
  *
  ******************************************************************************/
 
-STATIC LONG CompareNodes(of_node_t * node1, of_node_t * node2)
+STATIC LONG CompareNodes(APTR item1, APTR item2)
 {
+    of_node_t * node1 = (of_node_t *)item1;
+    of_node_t * node2 = (of_node_t *)item2;
     LONG result = 0;
 
     if (sortColumn == SORT_BY_LENGTH)
@@ -483,66 +558,6 @@ STATIC LONG CompareNodes(of_node_t * node1, of_node_t * node2)
     }
 
     return (sortReverse ? -result : result);
-}
-
-/******************************************************************************
- *
- * SortProperties()
- *
- ******************************************************************************/
-
-STATIC VOID SortProperties(of_property_t ** array, ULONG count)
-{
-    of_property_t * temp;
-    ULONG i;
-    LONG j;
-
-    for (i = 1; i < count; i++)
-    {
-        temp = array[i];
-
-        for (j = (LONG)i - 1; j >= 0; j--)
-        {
-            if (CompareProperties(array[j], temp) <= 0)
-            {
-                break;
-            }
-
-            array[j + 1] = array[j];
-        }
-
-        array[j + 1] = temp;
-    }
-}
-
-/******************************************************************************
- *
- * SortNodes()
- *
- ******************************************************************************/
-
-STATIC VOID SortNodes(of_node_t ** array, ULONG count)
-{
-    of_node_t * temp;
-    ULONG i;
-    LONG j;
-
-    for (i = 1; i < count; i++)
-    {
-        temp = array[i];
-
-        for (j = (LONG)i - 1; j >= 0; j--)
-        {
-            if (CompareNodes(array[j], temp) <= 0)
-            {
-                break;
-            }
-
-            array[j + 1] = array[j];
-        }
-
-        array[j + 1] = temp;
-    }
 }
 
 /******************************************************************************
@@ -619,7 +634,7 @@ STATIC VOID InsertProperties(
         }
     }
 
-    SortProperties(array, count);
+    InsertionSort((APTR *)array, count, CompareProperties);
 
     for (i = 0; i < count; i++)
     {
@@ -718,7 +733,7 @@ STATIC VOID InsertNodes(
         }
     }
 
-    SortNodes(array, count);
+    InsertionSort((APTR *)array, count, CompareNodes);
 
     for (i = 0; i < count; i++)
     {
@@ -1004,17 +1019,12 @@ STATIC APTR MakePlaceholder(CONST_STRPTR text)
  *
  * ShowHexDump()
  *
- * Replace the contents of the dump group with a HexEdit object, plus its
- * scrollbar, built for the given property.
- *
- * Members of a group may only be added or removed between
- * MUIM_Group_InitChange and MUIM_Group_ExitChange, and an object must be
- * removed from its group before being disposed. The scrollbar is created and
- * disposed together with the HexEdit object it is attached to, so the class
- * never ends up holding a prop object that no longer exists.
- *
- * A node, an empty property, or a missing HexEdit.mcc leave a plain text in
- * place of the dump: the group is never left without a child.
+ * Replace the dump group's contents with a HexEdit object and its scrollbar,
+ * built for the given property. Group members may only change between
+ * MUIM_Group_InitChange/ExitChange, and an object must be removed from its
+ * group before being disposed. A node, an empty property, or a missing
+ * HexEdit.mcc fall back to a placeholder text: the group is never left
+ * without a child.
  *
  ******************************************************************************/
 
@@ -1100,8 +1110,6 @@ STATIC VOID ShowHexDump(ObjApp_t * object, of_property_t * prop)
     {
         set(object->WI_Info, MUIA_Window_ActiveObject, (IPTR)object->OB_HexDump);
     }
-
-    // MUI_Redraw(object->WI_Info, MADF_DRAWUPDATE);
 }
 
 /******************************************************************************
@@ -1109,14 +1117,10 @@ STATIC VOID ShowHexDump(ObjApp_t * object, of_property_t * prop)
  * FormatInspect()
  *
  * One cell of the data inspector: the 'width' bytes at 'bytes', read in the
- * byte order and written in the base the user picked.
- *
- * The value is accumulated into a pair of longwords, which is all a 68000
- * has. In decimal, RawDoFmt() knowing no 64 bit specifier, a quad is printed
- * while it still fits in 32 bits, which covers every address and size the
- * tree holds in practice, and falls back to hexadecimal beyond.
- *
- * A cell holds a dash when the property ends before the value does.
+ * chosen byte order and written in the chosen base. Accumulated into a pair
+ * of longwords (all a 68000 has); in decimal, RawDoFmt() knowing no 64 bit
+ * specifier, a quad prints while it still fits in 32 bits and falls back to
+ * hexadecimal beyond. A dash means the property ends before the value does.
  *
  ******************************************************************************/
 
@@ -1254,18 +1258,10 @@ STATIC VOID DoCursor(ObjApp_t * object, ULONG where)
  *
  * InspectFunc()
  *
- * Display hook of the inspector: Type | Value.
- *
- * The inspector is a flat NListtree, and not a NList, for one reason only:
- * this is the display hook this program already uses for the device tree, so
- * its message is known good. NList has a display hook of its own, but with a
- * message of another shape, which could not be made to deliver its arrays;
- * NListtree being a subclass of NList, the columns, the title and the
- * separators look exactly the same.
- *
- * An entry carries the address of its description as user data, its index
- * giving the cell prepared by UpdateInspector(); that buffer only has to stay
- * valid while the line is drawn, which it does, being static.
+ * Display hook of the inspector: Type | Value. Built on NListtree rather
+ * than NList only because this program already has a working display hook
+ * of that shape; NListtree being a subclass of NList, columns/title/
+ * separators look identical.
  *
  ******************************************************************************/
 
@@ -1320,8 +1316,8 @@ STATIC SAVEDS ASM ULONG InspectFunc(
  *
  * FillInspector()
  *
- * Insert the eight rows once and for all, as leaves of the root list. The
- * user data is the address of the description the display hook works from.
+ * Insert the rows once, as leaves of the root list; user data is the
+ * address of the description InspectFunc() works from.
  *
  ******************************************************************************/
 
@@ -1344,13 +1340,10 @@ STATIC VOID FillInspector(ObjApp_t * object)
  *
  * UpdateInspector()
  *
- * Refresh the inspector from the byte the dump cursor sits on.
- *
- * Called from the main loop after every input, which is cheap: the cursor
- * only ever moves as the result of an event, and the whole thing gives up on
- * the first line as long as it points at the same byte as last time. Polling
- * this way needs nothing of the HexEdit class, which does not advertise its
- * cursor through a notification.
+ * Refresh the inspector from the byte the dump cursor sits on. Polled from
+ * the main loop after every input rather than notified, since HexEdit does
+ * not advertise its cursor that way; cheap, since it bails out on the first
+ * line whenever the byte hasn't changed.
  *
  ******************************************************************************/
 
@@ -1427,13 +1420,9 @@ STATIC VOID UpdateInspector(ObjApp_t * object)
  *
  * FillNodeInfo()
  *
- * Describe the active tree entry in the information window, whether it is a
- * property or a node. Nothing is opened or closed here.
- *
- * A node has no value of its own, so its length is its number of subitems and
- * its dump is empty; describing it too is what makes the window usable while
- * simply walking the tree, instead of leaving the details of some property
- * that is no longer selected on display.
+ * Describe the active tree entry (property or node) in the information
+ * window; nothing is opened or closed here. A node has no value of its own,
+ * so its length is its subitem count and its dump is empty.
  *
  ******************************************************************************/
 
@@ -1563,19 +1552,8 @@ STATIC VOID DoNodeInfo(ObjApp_t * object)
  *
  * WriteValue()
  *
- * Write what the displayed entry is worth to an open writer, shaped after
- * its type:
- *
- *   string       the string itself
- *   string list  one string per line, the empty ones skipped
- *   blob         the bytes in hexadecimal, sixteen per line
- *   long, quad   the value as the Value column words it
- *   node         its path, a node having nothing else to offer
- *
- * Nothing is gathered in a buffer first: the writer is fed piece by piece,
- * so a property of any size costs a few dozen bytes of stack. Nor is any
- * of it checked here: the writer remembers a failure, and WriterClose()
- * reports it once.
+ * Write what the displayed entry is worth: an inspector cell if 'text' is
+ * given, else the shown property's value (DumpValue()), or a node's path.
  *
  ******************************************************************************/
 
@@ -1610,10 +1588,6 @@ STATIC VOID WriteValue(struct Writer * writer, CONST_STRPTR text)
  *
  * DoCopy()
  *
- * Hand the value over to the clipboard. Everything the IFF plumbing needs
- * lives in Clipboard.c: here there is a writer to open, a value to write
- * and a verdict to read.
- *
  ******************************************************************************/
 
 STATIC VOID DoCopy(ObjApp_t * object, CONST_STRPTR text)
@@ -1633,9 +1607,7 @@ STATIC VOID DoCopy(ObjApp_t * object, CONST_STRPTR text)
 
     if (!ok)
     {
-        MUI_Request(object->App, object->WI_Info, 0,
-            (STRPTR)APP_NAME, (STRPTR)"*_Ok",
-            (STRPTR)"Nothing could be written to the clipboard.");
+        ReportFailure(object, object->WI_Info, (CONST_STRPTR)"Nothing could be written to the clipboard.");
     }
 }
 
@@ -1643,23 +1615,14 @@ STATIC VOID DoCopy(ObjApp_t * object, CONST_STRPTR text)
  *
  * DoSave()
  *
- * Save the value of the displayed property as it lies in memory: the raw
- * bytes of devicetree.resource, from op_value to op_length, and nothing
- * else. The clipboard is what gives a readable rendering of a value; a file
- * is what one wants byte for byte, to feed a disassembler or a dtc.
- *
- * A node has no value of its own, so there is nothing to save for one.
- *
- * The drawer it was last confirmed with is remembered in exportDrawer,
- * shared with DoSaveNode(): both save to disk, so a folder picked for one
- * is offered again for the other. The suggested file name always ends in
- * ".raw", to tell these raw byte dumps apart from DoSaveNode()'s ".txt".
+ * Save the displayed property's raw bytes as they lie in memory, byte for
+ * byte -- unlike DoCopy(), which gives a readable rendering to the
+ * clipboard. A node has nothing of its own to save.
  *
  ******************************************************************************/
 
 STATIC VOID DoSave(ObjApp_t * object)
 {
-    struct FileRequester * request;
     struct Writer writer;
     UBYTE path[MAX_PATHNAME];
     UBYTE fileName[128];
@@ -1669,55 +1632,29 @@ STATIC VOID DoSave(ObjApp_t * object)
         (shownProp->op_value == NULL) ||
         (shownProp->op_length == 0))
     {
-        MUI_Request(object->App, object->WI_Info, 0,
-            (STRPTR)APP_NAME, (STRPTR)"*_Ok",
-            (STRPTR)"This entry holds no value to save.");
-
+        ReportFailure(object, object->WI_Info, (CONST_STRPTR)"This entry holds no value to save.");
         return;
     }
 
     SPrintf(fileName, sizeof(fileName), (CONST_STRPTR)"%s.raw",
         (IPTR)((shownProp->op_name != NULL) ? shownProp->op_name : ""));
 
-    request = (struct FileRequester *)MUI_AllocAslRequestTags(ASL_FileRequest,
-        ASLFR_TitleText,     (IPTR)"Save the raw bytes to...",
-        ASLFR_DoSaveMode,    TRUE,
-        ASLFR_InitialDrawer, (IPTR)exportDrawer,
-        ASLFR_InitialFile,   (IPTR)fileName,
-        TAG_DONE);
-
-    if (request == NULL)
-    {
-        return;
-    }
-
-    if (MUI_AslRequestTags(request, TAG_DONE))
+    if (PickSavePath((CONST_STRPTR)"Save the raw bytes to...", fileName, path, sizeof(path)))
     {
         ok = FALSE;
 
-        StringCopy(exportDrawer, (CONST_STRPTR)request->fr_Drawer, (LONG)sizeof(exportDrawer));
-
-        StringCopy(path, (CONST_STRPTR)request->fr_Drawer, (LONG)sizeof(path));
-
-        if (AddPart(path, (CONST_STRPTR)request->fr_File, sizeof(path)))
+        if (WriterOpenFile(&writer, (CONST_STRPTR)path))
         {
-            if (WriterOpenFile(&writer, (CONST_STRPTR)path))
-            {
-                WriterWrite(&writer, (CONST_STRPTR)shownProp->op_value,
-                    (LONG)shownProp->op_length);
+            WriterWrite(&writer, (CONST_STRPTR)shownProp->op_value,
+                (LONG)shownProp->op_length);
 
-                ok = WriterClose(&writer);
-            }
+            ok = WriterClose(&writer);
         }
     }
 
-    MUI_FreeAslRequest(request);
-
     if (!ok)
     {
-        MUI_Request(object->App, object->WI_Info, 0,
-            (STRPTR)APP_NAME, (STRPTR)"*_Ok",
-            (STRPTR)"The bytes could not be written to that file.");
+        ReportFailure(object, object->WI_Info, (CONST_STRPTR)"The bytes could not be written to that file.");
     }
 }
 
@@ -1726,22 +1663,14 @@ STATIC VOID DoSave(ObjApp_t * object)
  * DoSaveNode()
  *
  * Save the tree's currently selected entry, and everything below it, to a
- * plain text file, in the same wording FormatType()/DumpValue() give the
- * tree view. Selecting the root node "/" dumps the whole tree.
- *
- * An active search (searchFilter) narrows this down exactly as it does
- * the tree view: only matching entries and their ancestors are written.
- *
- * Only the drawer is remembered between calls (exportDrawer, shared with
- * DoSave()): the initial file name is suggested from the entry itself,
- * since it changes with every use.
+ * plain text file. Selecting the root node "/" dumps the whole tree, and
+ * an active search narrows this down exactly as it does the tree view.
  *
  ******************************************************************************/
 
 STATIC VOID DoSaveNode(ObjApp_t * object)
 {
     struct MUI_NListtree_TreeNode * tn = NULL;
-    struct FileRequester * request;
     struct Writer writer;
     UBYTE path[MAX_PATHNAME];
     UBYTE fileName[128];
@@ -1753,10 +1682,7 @@ STATIC VOID DoSaveNode(ObjApp_t * object)
 
     if ((tn == NULL) || ((IPTR)tn == (IPTR)MUIV_NListtree_Active_Off))
     {
-        MUI_Request(object->App, object->WI_Main, 0,
-            (STRPTR)APP_NAME, (STRPTR)"*_Ok",
-            (STRPTR)"Select a node or a property first.");
-
+        ReportFailure(object, object->WI_Main, (CONST_STRPTR)"Select a node or a property first.");
         return;
     }
 
@@ -1773,60 +1699,37 @@ STATIC VOID DoSaveNode(ObjApp_t * object)
 
     SPrintf(fileName, sizeof(fileName), (CONST_STRPTR)"%s.txt", (IPTR)entryName);
 
-    request = (struct FileRequester *)MUI_AllocAslRequestTags(ASL_FileRequest,
-        ASLFR_TitleText,     (IPTR)"Save this entry to...",
-        ASLFR_DoSaveMode,    TRUE,
-        ASLFR_InitialDrawer, (IPTR)exportDrawer,
-        ASLFR_InitialFile,   (IPTR)fileName,
-        TAG_DONE);
-
-    if (request == NULL)
-    {
-        return;
-    }
-
-    if (MUI_AslRequestTags(request, TAG_DONE))
+    if (PickSavePath((CONST_STRPTR)"Save this entry to...", fileName, path, sizeof(path)))
     {
         ok = FALSE;
 
-        StringCopy(exportDrawer, (CONST_STRPTR)request->fr_Drawer, (LONG)sizeof(exportDrawer));
-
-        StringCopy(path, (CONST_STRPTR)request->fr_Drawer, (LONG)sizeof(path));
-
-        if (AddPart(path, (CONST_STRPTR)request->fr_File, sizeof(path)))
+        if (WriterOpenFile(&writer, (CONST_STRPTR)path))
         {
-            if (WriterOpenFile(&writer, (CONST_STRPTR)path))
+            if (tn->tn_Flags & TNF_LIST)
             {
-                if (tn->tn_Flags & TNF_LIST)
-                {
-                    DumpOneNode(&writer, (const of_node_t *)tn->tn_User, 0);
-                }
-                else
-                {
-                    struct MUI_NListtree_TreeNode * parentTn =
-                        (struct MUI_NListtree_TreeNode *)DoMethod(object->TR_Tree,
-                            MUIM_NListtree_GetEntry, (IPTR)tn,
-                            MUIV_NListtree_GetEntry_Position_Parent, 0);
-
-                    const of_node_t * owner = (parentTn != NULL)
-                        ? (const of_node_t *)parentTn->tn_User : NULL;
-
-                    DumpOneProperty(&writer, owner,
-                        (const of_property_t *)tn->tn_User, 0);
-                }
-
-                ok = WriterClose(&writer);
+                DumpOneNode(&writer, (const of_node_t *)tn->tn_User, 0);
             }
+            else
+            {
+                struct MUI_NListtree_TreeNode * parentTn =
+                    (struct MUI_NListtree_TreeNode *)DoMethod(object->TR_Tree,
+                        MUIM_NListtree_GetEntry, (IPTR)tn,
+                        MUIV_NListtree_GetEntry_Position_Parent, 0);
+
+                const of_node_t * owner = (parentTn != NULL)
+                    ? (const of_node_t *)parentTn->tn_User : NULL;
+
+                DumpOneProperty(&writer, owner,
+                    (const of_property_t *)tn->tn_User, 0);
+            }
+
+            ok = WriterClose(&writer);
         }
     }
 
-    MUI_FreeAslRequest(request);
-
     if (!ok)
     {
-        MUI_Request(object->App, object->WI_Main, 0,
-            (STRPTR)APP_NAME, (STRPTR)"*_Ok",
-            (STRPTR)"The entry could not be dumped to that file.");
+        ReportFailure(object, object->WI_Main, (CONST_STRPTR)"The entry could not be dumped to that file.");
     }
 }
 
@@ -2028,14 +1931,9 @@ VOID ProcessEvents(VOID)
  * MENU
  *
  * A classic gadtools.library NewMenu array, handed to
- * MUI_MakeObject(MUIO_MenustripNM, ...) to build the whole menu strip in
- * one call. Every real action's nm_UserData is a ProcessEvent_t: MUI
- * delivers it straight back as MUIM_Application_Input's return value when
- * the item is picked (by mouse or by its nm_CommKey shortcut), so no
- * per-item MUIM_Notify wiring is needed the way a hand-built MenustripObject
- * tree would require. MI_FullNames/MI_ShowSearch's toggled state is looked
- * up once after creation via MUIM_FindUData (see CreateApp()), since
- * nothing here keeps a pointer to the item objects themselves.
+ * MUI_MakeObject(MUIO_MenustripNM, ...). Every real item's nm_UserData is a
+ * ProcessEvent_t, delivered straight back by MUIM_Application_Input when
+ * picked, so no per-item MUIM_Notify wiring is needed.
  *
  ******************************************************************************/
 
@@ -2324,7 +2222,7 @@ ObjApp_t * CreateApp(VOID)
     UpdateTitleMark(object);
     DoReload(object);
     set(object->WI_Main, MUIA_Window_Open, TRUE);
-    set(object->WI_Main, MUIA_Window_ActiveObject, (IPTR)object->TR_Tree);
+    set(object->WI_Main, MUIA_Window_ActiveObject, (IPTR)object->ST_Search);
 
     return (object);
 }

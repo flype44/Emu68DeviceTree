@@ -23,7 +23,9 @@ extern struct Library * UtilityBase;
  *
  ******************************************************************************/
 
-STATIC LONG StringCompare2(CONST_STRPTR string1, CONST_STRPTR string2);
+STATIC LONG  StringCompare2(CONST_STRPTR string1, CONST_STRPTR string2);
+STATIC ULONG BitsAt(ULONG high, ULONG low, UWORD offset, UWORD count);
+STATIC BOOL  IsLeapYear(ULONG year);
 
 /******************************************************************************
  *
@@ -330,7 +332,6 @@ STATIC ULONG BitsAt(ULONG high, ULONG low, UWORD offset, UWORD count)
     return (value & mask);
 }
 
-
 /******************************************************************************
  * 
  * FormatBits()
@@ -369,66 +370,121 @@ VOID FormatBits(
 }
 
 /******************************************************************************
- * 
- * FormatEpoch()
- * 
+ *
+ * IsLeapYear()
+ *
  ******************************************************************************/
 
 STATIC BOOL IsLeapYear(ULONG year)
 {
-    if ((year %   4) != 0) return (FALSE);
-    if ((year % 100) != 0) return (TRUE);
-    if ((year % 400) != 0) return (FALSE);
-    return (TRUE);
+    if ((year % 4) != 0)
+    {
+        return (FALSE);
+    }
+
+    if ((year % 100) != 0)
+    {
+        return (TRUE);
+    }
+
+    return ((BOOL)((year % 400) == 0));
 }
 
-VOID FormatEpoch(ULONG epoch, STRPTR buf, ULONG size)
+/******************************************************************************
+ *
+ * FormatEpoch()
+ *
+ * Seconds since 1970-01-01 as "YYYY-MM-DD HH:MM:SS", proleptic Gregorian,
+ * no timezone. Written by hand rather than through utility.library's clock
+ * support, which works from a struct DateStamp, not a raw epoch value.
+ *
+ ******************************************************************************/
+
+VOID FormatEpoch(ULONG epoch, STRPTR buffer, ULONG size)
 {
-    ULONG n, r, y = 1970, m = 0, d, h, u, s, l;
-    STATIC CONST UBYTE x[12] = { 31,28,31,30,31,30,31,31,30,31,30,31 };
-    
-    if (!buf || size < 20) {
-        if (buf && size) buf[0] = 0;
+    STATIC CONST UBYTE daysInMonth[12] =
+        { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+
+    ULONG days;
+    ULONG secs;
+    ULONG year = 1970;
+    ULONG month = 0;
+    ULONG day;
+    ULONG hour;
+    ULONG minute;
+    ULONG second;
+
+    if ((buffer == NULL) || (size < 20))
+    {
+        if ((buffer != NULL) && (size > 0))
+        {
+            buffer[0] = '\0';
+        }
+
         return;
     }
 
-    n = epoch / 86400UL;
-    r = epoch % 86400UL;
-    h = r / 3600UL;
-    r %= 3600UL;
-    u = r / 60UL;
-    s = r % 60UL;
+    days = epoch / 86400UL;
+    secs = epoch % 86400UL;
+    hour = secs / 3600UL;
+    secs %= 3600UL;
+    minute = secs / 60UL;
+    second = secs % 60UL;
 
-    for (;;) {
-        ULONG t = IsLeapYear(y) ? 366UL : 365UL;
-        if (n < t) break;
-        n -= t; y++;
+    for (;;)
+    {
+        ULONG yearLength = IsLeapYear(year) ? 366UL : 365UL;
+
+        if (days < yearLength)
+        {
+            break;
+        }
+
+        days -= yearLength;
+        year++;
     }
 
-    while (m < 12) {
-        l = x[m];
-        if ((m == 1) && IsLeapYear(y)) l++;
-        if (n < l) break;
-        n -= l; m++;
+    while (month < 12)
+    {
+        ULONG monthLength = daysInMonth[month];
+
+        if ((month == 1) && IsLeapYear(year))
+        {
+            monthLength++;
+        }
+
+        if (days < monthLength)
+        {
+            break;
+        }
+
+        days -= monthLength;
+        month++;
     }
 
-    m++;
-    d = n + 1;
+    month++;
+    day = days + 1;
 
-    buf[ 0] = (UBYTE)('0' + ((y / 1000) % 10));
-    buf[ 1] = (UBYTE)('0' + ((y / 100) % 10));
-    buf[ 2] = (UBYTE)('0' + ((y / 10) % 10));
-    buf[ 3] = (UBYTE)('0' + ((y / 1) % 10)); buf[4] = '-';
-    buf[ 5] = (UBYTE)('0' + ((m / 10)));
-    buf[ 6] = (UBYTE)('0' + ((m % 10))); buf[7] = '-';
-    buf[ 8] = (UBYTE)('0' + ((d / 10)));
-    buf[ 9] = (UBYTE)('0' + ((d % 10))); buf[10] = ' ';
-    buf[11] = (UBYTE)('0' + ((h / 10)));
-    buf[12] = (UBYTE)('0' + ((h % 10))); buf[13] = ':';
-    buf[14] = (UBYTE)('0' + ((u / 10)));
-    buf[15] = (UBYTE)('0' + ((u % 10))); buf[16] = ':';
-    buf[17] = (UBYTE)('0' + ((s / 10)));
-    buf[18] = (UBYTE)('0' + ((s % 10))); buf[19] = '\0';
+    buffer[ 0] = (UBYTE)('0' + ((year / 1000) % 10));
+    buffer[ 1] = (UBYTE)('0' + ((year / 100) % 10));
+    buffer[ 2] = (UBYTE)('0' + ((year / 10) % 10));
+    buffer[ 3] = (UBYTE)('0' + (year % 10));
+    buffer[ 4] = '-';
+    buffer[ 5] = (UBYTE)('0' + (month / 10));
+    buffer[ 6] = (UBYTE)('0' + (month % 10));
+    buffer[ 7] = '-';
+    buffer[ 8] = (UBYTE)('0' + (day / 10));
+    buffer[ 9] = (UBYTE)('0' + (day % 10));
+    buffer[10] = ' ';
+    buffer[11] = (UBYTE)('0' + (hour / 10));
+    buffer[12] = (UBYTE)('0' + (hour % 10));
+    buffer[13] = ':';
+    buffer[14] = (UBYTE)('0' + (minute / 10));
+    buffer[15] = (UBYTE)('0' + (minute % 10));
+    buffer[16] = ':';
+    buffer[17] = (UBYTE)('0' + (second / 10));
+    buffer[18] = (UBYTE)('0' + (second % 10));
+    buffer[19] = '\0';
 }
 
 /******************************************************************************

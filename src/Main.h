@@ -37,7 +37,7 @@
 #define APP_NAME        "Emu68DeviceTree"
 #define APP_BASE        "Emu68DeviceTree"
 #define APP_DATE        "18.9.2026"
-#define APP_VERSION     "1.0.1"
+#define APP_VERSION     "1.0.2"
 #define APP_VERSTRING   APP_NAME " " APP_VERSION " (" APP_DATE ")"
 #define APP_AUTHORS     "Philippe CARPENTIER"
 #define APP_COPYRIGHT   "Written by " APP_AUTHORS
