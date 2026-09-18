@@ -2,13 +2,13 @@ Short:        Display the PiStorm/Emu68 Device Tree
 Author:       flype44 (at) gmail
 Uploader:     flype44 (at) gmail
 Type:         util/moni
-Version:      1.0.1
+Version:      1.0.2
 Architecture: m68k-amigaos >= 3.0.0
 Distribution: Aminet
 Requires:     MUI 3.8, MCC_NList, MCC_NListtree, MCC_HexEdit
 
 
-                        Emu68DeviceTree 1.0.1
+                        Emu68DeviceTree 1.0.2
                         =====================
 
                   Display the PiStorm/Emu68 Device Tree

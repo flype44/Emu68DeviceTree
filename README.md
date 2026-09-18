@@ -7,7 +7,7 @@ by [Emu68](https://github.com/michalsc/Emu68) on PiStorm boards. It is meant for
 lowlevel PiStorm/Emu68 developer who needs to see, decode and extract what
 `devicetree.resource` holds, without leaving AmigaOS.
 
-- **Version:** 1.0.1
+- **Version:** 1.0.2
 - **Author:** Philippe CARPENTIER (flype44 *at* gmail)
 - **Architecture:** m68k-amigaos >= 3.0.0
 - **Distribution:** [Aminet](http://aminet.net/) — `util/moni`
