@@ -10,6 +10,7 @@
  ******************************************************************************/
 
 #include <dos/dos.h>
+#include <dos/dosextens.h>
 #include <dos/rdargs.h>
 #include <exec/exec.h>
 #include <intuition/intuition.h>
@@ -114,6 +115,7 @@ STATIC BOOL  ResolvePath(const of_node_t * root, CONST_STRPTR path,
                  const of_node_t ** outNode, const of_property_t ** outProp);
 STATIC BOOL  DoExport(CONST_STRPTR nodePath, CONST_STRPTR search);
 STATIC VOID  DoHelp(VOID);
+STATIC ULONG RunGUI(VOID);
 STATIC VOID  DumpValue(struct Writer * writer, const of_property_t * prop);
 STATIC VOID  DumpIndent(struct Writer * writer, ULONG depth);
 STATIC VOID  DumpNodePath(struct Writer * writer, const of_node_t * node);
@@ -3049,10 +3051,12 @@ STATIC VOID DoHelp(VOID)
 {
     PutStr(APP_VERSTRING "\n" APP_DESCRIPTION ".\n\n");
     PutStr("Emu68DeviceTree [SEARCH=<text>] [NODE=<path>] [HELP]\n\n");
-    PutStr("No argument      Open the usual MUI browser window.\n");
+    PutStr("From Workbench   Open the usual MUI browser window.\n");
+    PutStr("No argument      Print this text (a Shell never gets a window\n");
+    PutStr("                 it did not ask for).\n");
     PutStr("SEARCH=<text>    Print the tree filtered to <text> (case insensitive,\n");
     PutStr("                 substring, with full paths) to standard output, then\n");
-    PutStr("                 quit. No window, no MUI.\n");
+    PutStr("                 quit. No window, no MUI. Ignored if NODE is given.\n");
     PutStr("NODE=<path>      Print that one node or property, and everything below\n");
     PutStr("                 it, to standard output, then quit. No window, no MUI.\n");
     PutStr("HELP             Show this text, then quit.\n\n");
@@ -3061,39 +3065,22 @@ STATIC VOID DoHelp(VOID)
     PutStr("  Emu68DeviceTree NODE=\"/soc/watchdog@7e100000/\" >RAM:watchdog.txt\n");
 }
 
-ULONG main(VOID)
+/******************************************************************************
+ *
+ * RunGUI()
+ *
+ * The normal, windowed program: open the libraries, build and run the MUI
+ * application, tear it down. Only ever reached from a Workbench launch
+ * (see main()): a Shell gets SEARCH=/NODE= or DoHelp() instead, never a
+ * window it did not ask for.
+ *
+ ******************************************************************************/
+
+STATIC ULONG RunGUI(VOID)
 {
     ULONG result = RETURN_FAIL;
-    struct RDArgs * rdArgs;
-    LONG args[ARG_COUNT];
 
-    args[ARG_SEARCH] = 0;
-    args[ARG_NODE]   = 0;
-    args[ARG_HELP]   = FALSE;
-
-    if (!(rdArgs = ReadArgs(ARGS_TEMPLATE, args, NULL)))
-    {
-        PrintFault(IoErr(), (CONST_STRPTR)APP_NAME);
-        return (RETURN_FAIL);
-    }
-
-    if (args[ARG_HELP])
-    {
-        DoHelp();
-        result = RETURN_OK;
-    }
-    else if ((args[ARG_SEARCH] != 0) || (args[ARG_NODE] != 0))
-    {
-        /* "Emu68DeviceTree SEARCH=... / NODE=...": dump to standard output
-           and quit, no window and no MUI ever opened. See DoExport(). */
-
-        if (OpenDeviceTree())
-        {
-            result = DoExport((CONST_STRPTR)args[ARG_NODE],
-                (CONST_STRPTR)args[ARG_SEARCH]) ? RETURN_OK : RETURN_WARN;
-        }
-    }
-    else if (OpenLibs())
+    if (OpenLibs())
     {
         result = RETURN_WARN;
 
@@ -3110,6 +3097,63 @@ ULONG main(VOID)
         }
 
         CloseLibs();
+    }
+
+    return (result);
+}
+
+/******************************************************************************
+ *
+ * Entry Point
+ *
+ ******************************************************************************/
+
+ULONG main(VOID)
+{
+    ULONG result;
+    LONG args[ARG_COUNT];
+    struct RDArgs * rdArgs;
+    struct Process * process = (struct Process *)SysBase->ThisTask;
+
+    if (process->pr_CLI == 0)
+    {
+        /* No CommandLineInterface attached to this process: started from
+           Workbench (icon double-click), not a Shell. The GUI is
+           Workbench-only; a Shell gets SEARCH=/NODE= or, failing that, the
+           same help a plain HELP would give (see below) -- never a window
+           it did not ask for. */
+
+        return (RunGUI());
+    }
+
+    args[ARG_SEARCH] = 0;
+    args[ARG_NODE]   = 0;
+    args[ARG_HELP]   = FALSE;
+
+    if (!(rdArgs = ReadArgs(ARGS_TEMPLATE, args, NULL)))
+    {
+        PrintFault(IoErr(), (CONST_STRPTR)APP_NAME);
+        return (RETURN_FAIL);
+    }
+
+    if ((args[ARG_SEARCH] != 0) || (args[ARG_NODE] != 0))
+    {
+        result = RETURN_FAIL;
+
+        if (OpenDeviceTree())
+        {
+            result = DoExport((CONST_STRPTR)args[ARG_NODE],
+                (CONST_STRPTR)args[ARG_SEARCH]) ? RETURN_OK : RETURN_WARN;
+        }
+    }
+    else
+    {
+        /* HELP, or nothing at all: either way, print the same usage text
+           rather than opening a window from a Shell that did not ask for
+           one. */
+
+        DoHelp();
+        result = RETURN_OK;
     }
 
     FreeArgs(rdArgs);
