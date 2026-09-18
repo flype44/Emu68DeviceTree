@@ -60,12 +60,13 @@ STATIC VOID WriterClear(struct Writer * writer);
 
 STATIC VOID WriterClear(struct Writer * writer)
 {
-    writer->wr_IFF    = NULL;
-    writer->wr_Clip   = NULL;
-    writer->wr_File   = 0;
-    writer->wr_Chunks = 0;
-    writer->wr_Nested = FALSE;
-    writer->wr_Error  = FALSE;
+    writer->wr_IFF     = NULL;
+    writer->wr_Clip    = NULL;
+    writer->wr_File    = 0;
+    writer->wr_OwnFile = FALSE;
+    writer->wr_Chunks  = 0;
+    writer->wr_Nested  = FALSE;
+    writer->wr_Error   = FALSE;
 }
 
 /******************************************************************************
@@ -146,7 +147,28 @@ BOOL WriterOpenFile(struct Writer * writer, CONST_STRPTR path)
         return (FALSE);
     }
 
-    writer->wr_File = Open(path, MODE_NEWFILE);
+    writer->wr_File    = Open(path, MODE_NEWFILE);
+    writer->wr_OwnFile = TRUE;
+
+    return ((BOOL)(writer->wr_File != 0));
+}
+
+/******************************************************************************
+ *
+ * WriterOpenOutput()
+ *
+ * The process's own standard output, exactly as the Shell set it up: a
+ * plain window when run interactively, or whatever file a ">" redirection
+ * points at. Never closed by WriterClose(): it belongs to the process, not
+ * to this writer.
+ *
+ ******************************************************************************/
+
+BOOL WriterOpenOutput(struct Writer * writer)
+{
+    WriterClear(writer);
+
+    writer->wr_File = Output();
 
     return ((BOOL)(writer->wr_File != 0));
 }
@@ -235,7 +257,11 @@ BOOL WriterClose(struct Writer * writer)
 
     if (writer->wr_File)
     {
-        Close(writer->wr_File);
+        if (writer->wr_OwnFile)
+        {
+            Close(writer->wr_File);
+        }
+
         writer->wr_File = 0;
     }
 

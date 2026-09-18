@@ -8,9 +8,10 @@
 /******************************************************************************
  *
  * A writer takes text and puts it somewhere: in the clipboard, as the FORM
- * FTXT holding one CHRS chunk that every Amiga text application reads, or in
- * a plain file. Opening and closing are what tell the two apart; in between,
- * the caller only writes, and never has to know which of the two it got.
+ * FTXT holding one CHRS chunk that every Amiga text application reads, in a
+ * plain file, or on the process's own standard output. Opening and closing
+ * are what tell them apart; in between, the caller only writes, and never
+ * has to know which of the three it got.
  *
  * Errors are collected rather than returned: WriterWrite() keeps quiet and
  * remembers, so that a long value can be written in one straight run, and
@@ -27,6 +28,7 @@ struct Writer
     struct IFFHandle *       wr_IFF;     /* Clipboard stream, else NULL      */
     struct ClipboardHandle * wr_Clip;    /* Its handle, else NULL            */
     BPTR                     wr_File;    /* File, else zero                  */
+    BOOL                     wr_OwnFile; /* Close() it on WriterClose()?     */
     UWORD                    wr_Chunks;  /* Chunks pushed, still to pop      */
     BOOL                     wr_Nested;  /* OpenIFF() done, CloseIFF() owed  */
     BOOL                     wr_Error;   /* Sticky: a write did not go       */
@@ -36,6 +38,7 @@ struct Writer
 
 BOOL WriterOpenClipboard(struct Writer * writer);
 BOOL WriterOpenFile(struct Writer * writer, CONST_STRPTR path);
+BOOL WriterOpenOutput(struct Writer * writer);
 VOID WriterWrite(struct Writer * writer, CONST_STRPTR data, LONG length);
 BOOL WriterClose(struct Writer * writer);
 

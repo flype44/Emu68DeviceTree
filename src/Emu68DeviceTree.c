@@ -10,6 +10,7 @@
  ******************************************************************************/
 
 #include <dos/dos.h>
+#include <dos/rdargs.h>
 #include <exec/exec.h>
 #include <intuition/intuition.h>
 #include <libraries/asl.h>
@@ -53,6 +54,7 @@
  * 
  ******************************************************************************/
 
+STATIC BOOL OpenDeviceTree(VOID);
 BOOL OpenLibs(VOID);
 VOID CloseLibs(VOID);
 
@@ -108,6 +110,10 @@ STATIC VOID  DoSearch(ObjApp_t * object);
 STATIC VOID  DoToggleSearch(ObjApp_t * object);
 STATIC VOID  DoSave(ObjApp_t * object);
 STATIC VOID  DoSaveNode(ObjApp_t * object);
+STATIC BOOL  ResolvePath(const of_node_t * root, CONST_STRPTR path,
+                 const of_node_t ** outNode, const of_property_t ** outProp);
+STATIC BOOL  DoExport(CONST_STRPTR nodePath, CONST_STRPTR search);
+STATIC VOID  DoHelp(VOID);
 STATIC VOID  DumpValue(struct Writer * writer, const of_property_t * prop);
 STATIC VOID  DumpIndent(struct Writer * writer, ULONG depth);
 STATIC VOID  DumpNodePath(struct Writer * writer, const of_node_t * node);
@@ -2243,6 +2249,182 @@ STATIC VOID DoSaveNode(ObjApp_t * object)
 
 /******************************************************************************
  *
+ * ResolvePath()
+ *
+ * The node or property at 'path' ("/soc/watchdog@7e100000/phandle", leading/
+ * trailing slashes and repeats of them ignored), walking on_children one
+ * name at a time, case insensitive. The last segment may name a property
+ * instead of a child node, in which case '*outNode' is left holding its
+ * parent and '*outProp' the property itself; otherwise '*outNode' is the
+ * resolved node and '*outProp' is NULL. '*outNode' is 'root' and '*outProp'
+ * is NULL for an empty path. Returns FALSE if any segment along the way
+ * matches neither a child node nor, as the last segment, a property.
+ *
+ ******************************************************************************/
+
+STATIC BOOL ResolvePath(const of_node_t * root, CONST_STRPTR path,
+    const of_node_t ** outNode, const of_property_t ** outProp)
+{
+    const of_node_t * node = root;
+
+    *outNode = root;
+    *outProp = NULL;
+
+    if (path == NULL)
+    {
+        return (TRUE);
+    }
+
+    while (*path == '/')
+    {
+        path++;
+    }
+
+    while (*path != '\0')
+    {
+        UBYTE segment[128];
+        LONG len = 0;
+        const of_node_t * child;
+        CONST_STRPTR rest;
+
+        while ((path[len] != '\0') && (path[len] != '/'))
+        {
+            len++;
+        }
+
+        if (len >= (LONG)sizeof(segment))
+        {
+            len = (LONG)sizeof(segment) - 1;
+        }
+
+        CopyMem((APTR)path, (APTR)segment, (ULONG)len);
+        segment[len] = '\0';
+
+        rest = path + len;
+
+        while (*rest == '/')
+        {
+            rest++;
+        }
+
+        for (child = node->on_children; child != NULL; child = child->on_next)
+        {
+            CONST_STRPTR name = (CONST_STRPTR)child->on_name;
+
+            if ((name != NULL) && (Stricmp(name, (CONST_STRPTR)segment) == 0))
+            {
+                break;
+            }
+        }
+
+        if (child != NULL)
+        {
+            node  = child;
+            path  = rest;
+            *outNode = node;
+            continue;
+        }
+
+        /* Not a child node: only a property of 'node' can still match, and
+           only as the very last segment of the path */
+
+        if (*rest == '\0')
+        {
+            const of_property_t * prop;
+
+            for (prop = node->on_properties; prop != NULL; prop = prop->op_next)
+            {
+                CONST_STRPTR name = (CONST_STRPTR)prop->op_name;
+
+                if ((name != NULL) && (Stricmp(name, (CONST_STRPTR)segment) == 0))
+                {
+                    *outProp = prop; /* *outNode is already its parent */
+                    return (TRUE);
+                }
+            }
+        }
+
+        return (FALSE);
+    }
+
+    return (TRUE);
+}
+
+/******************************************************************************
+ *
+ * DoExport()
+ *
+ * The headless counterpart to DoSaveNode(): straight from the Shell command
+ * line (see main()), write to standard output and quit, no window ever
+ * opened -- so the result can be read directly or redirected to a file,
+ * e.g. "Emu68DeviceTree SEARCH=watchdog >RAM:watchdog.txt".
+ *
+ * With 'nodePath' (NODE=), that single node (or property) and everything
+ * below it, in full, exactly like selecting it in the tree and using *Save
+ * node as...*. With 'search' (SEARCH=) instead, the whole tree filtered
+ * exactly as the search gadget would: matching entries and their ancestors.
+ * A typical remote session runs SEARCH first to find the interesting node's
+ * path, then NODE to pull that node whole. Always with full names, since a
+ * path to nowhere on screen is the only context a plain text stream can
+ * offer. NODE wins if somehow both are given.
+ *
+ ******************************************************************************/
+
+STATIC BOOL DoExport(CONST_STRPTR nodePath, CONST_STRPTR search)
+{
+    struct Writer writer;
+    BOOL ok = FALSE;
+
+    dumpFullNames   = TRUE;
+    searchFilter[0] = '\0';
+
+    if ((nodePath != NULL) && (nodePath[0] != '\0'))
+    {
+        const of_node_t * node = NULL;
+        const of_property_t * prop = NULL;
+
+        if (!ResolvePath(DTBase->dt_Root, nodePath, &node, &prop))
+        {
+            PutStr("No such node or property.\n");
+            return (FALSE);
+        }
+
+        if (WriterOpenOutput(&writer))
+        {
+            if (prop != NULL)
+            {
+                DumpOneProperty(&writer, node, prop, 0);
+            }
+            else
+            {
+                DumpOneNode(&writer, node, 0);
+            }
+
+            ok = WriterClose(&writer);
+        }
+    }
+    else
+    {
+        StringCopy(searchFilter, search, (LONG)sizeof(searchFilter));
+
+        if (WriterOpenOutput(&writer))
+        {
+            DumpNode(&writer, DTBase->dt_Root, 0);
+
+            ok = WriterClose(&writer);
+        }
+    }
+
+    if (!ok)
+    {
+        PutStr("The device tree could not be written to standard output.\n");
+    }
+
+    return (ok);
+}
+
+/******************************************************************************
+ *
  * DoInspect()
  *
  ******************************************************************************/
@@ -2773,24 +2955,43 @@ VOID DisposeApp(ObjApp_t * object)
 
 /******************************************************************************
  *
- * OpenLibs()
+ * OpenDeviceTree()
+ *
+ * Just the resource, nothing MUI: what the headless SEARCH=/NODE= command
+ * line mode needs and nothing more (see main()).
  *
  ******************************************************************************/
 
-BOOL OpenLibs(VOID)
+STATIC BOOL OpenDeviceTree(VOID)
 {
     if (!(DTBase = (struct DeviceTreeBase *)OpenResource((CONST_STRPTR)DEVICETREE_NAME)))
     {
         PutStr("Failed to open " DEVICETREE_NAME ".\n");
         return (FALSE);
     }
-    
+
     if (!DTBase->dt_Root)
     {
         PutStr("Failed to open " DEVICETREE_NAME ".\n");
         return (FALSE);
     }
-    
+
+    return (TRUE);
+}
+
+/******************************************************************************
+ *
+ * OpenLibs()
+ *
+ ******************************************************************************/
+
+BOOL OpenLibs(VOID)
+{
+    if (!OpenDeviceTree())
+    {
+        return (FALSE);
+    }
+
     if (!(MUIMasterBase = OpenLibrary((CONST_STRPTR)MUIMASTER_NAME, MUIMASTER_VMIN)))
     {
         PutStr("Failed to open " MUIMASTER_NAME ".\n");
@@ -2830,14 +3031,72 @@ VOID CloseLibs(VOID)
  *
  ******************************************************************************/
 
+#define ARGS_TEMPLATE (CONST_STRPTR)"SEARCH/K,NODE/K,HELP/S"
+
+typedef enum { ARG_SEARCH, ARG_NODE, ARG_HELP, ARG_COUNT } Arg_t;
+
+/******************************************************************************
+ *
+ * DoHelp()
+ *
+ * What "Emu68DeviceTree ?" leads to: it shows the template above, whoever
+ * is reading it types HELP out of curiosity, and lands here. No window, no
+ * MUI, same as SEARCH=/NODE=.
+ *
+ ******************************************************************************/
+
+STATIC VOID DoHelp(VOID)
+{
+    PutStr(APP_VERSTRING "\n" APP_DESCRIPTION ".\n\n");
+    PutStr("Emu68DeviceTree [SEARCH=<text>] [NODE=<path>] [HELP]\n\n");
+    PutStr("No argument      Open the usual MUI browser window.\n");
+    PutStr("SEARCH=<text>    Print the tree filtered to <text> (case insensitive,\n");
+    PutStr("                 substring, with full paths) to standard output, then\n");
+    PutStr("                 quit. No window, no MUI.\n");
+    PutStr("NODE=<path>      Print that one node or property, and everything below\n");
+    PutStr("                 it, to standard output, then quit. No window, no MUI.\n");
+    PutStr("HELP             Show this text, then quit.\n\n");
+    PutStr("Examples:\n");
+    PutStr("  Emu68DeviceTree SEARCH=watchdog\n");
+    PutStr("  Emu68DeviceTree NODE=\"/soc/watchdog@7e100000/\" >RAM:watchdog.txt\n");
+}
+
 ULONG main(VOID)
 {
     ULONG result = RETURN_FAIL;
-    
-    if (OpenLibs())
+    struct RDArgs * rdArgs;
+    LONG args[ARG_COUNT];
+
+    args[ARG_SEARCH] = 0;
+    args[ARG_NODE]   = 0;
+    args[ARG_HELP]   = FALSE;
+
+    if (!(rdArgs = ReadArgs(ARGS_TEMPLATE, args, NULL)))
+    {
+        PrintFault(IoErr(), (CONST_STRPTR)APP_NAME);
+        return (RETURN_FAIL);
+    }
+
+    if (args[ARG_HELP])
+    {
+        DoHelp();
+        result = RETURN_OK;
+    }
+    else if ((args[ARG_SEARCH] != 0) || (args[ARG_NODE] != 0))
+    {
+        /* "Emu68DeviceTree SEARCH=... / NODE=...": dump to standard output
+           and quit, no window and no MUI ever opened. See DoExport(). */
+
+        if (OpenDeviceTree())
+        {
+            result = DoExport((CONST_STRPTR)args[ARG_NODE],
+                (CONST_STRPTR)args[ARG_SEARCH]) ? RETURN_OK : RETURN_WARN;
+        }
+    }
+    else if (OpenLibs())
     {
         result = RETURN_WARN;
-        
+
         if ((appMain = CreateApp()) != NULL)
         {
             DoReload(appMain);
@@ -2849,10 +3108,12 @@ ULONG main(VOID)
         {
             PutStr("Failed to create MUI application.\n");
         }
-        
+
         CloseLibs();
     }
-    
+
+    FreeArgs(rdArgs);
+
     return (result);
 }
 
